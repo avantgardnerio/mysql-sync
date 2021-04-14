@@ -24,10 +24,12 @@ const argv = yargs
     const con = mysql.createConnection(config);
     con.on(`error`, (err) => console.error(`Connection error ${err.code}`));
 
-    const sql = await fs.readFile("db/queries/get_fks.sql", "utf-8");
-
-    const result = await con.awaitQuery(sql, argv.schema);
-    console.log(result);
-
+    const fks = await con.awaitQuery(await fs.readFile("db/queries/get_fks.sql", "utf-8"), config.database);
+    const cols = await con.awaitQuery(await fs.readFile("db/queries/get_columns.sql", "utf-8"), config.database);
+    const tables = cols.reduce((acc, cur) => {
+        acc[cur.TABLE_NAME] = acc[cur.TABLE_NAME] || {"cols": {}};
+        acc[cur.TABLE_NAME].cols[cur.COLUMN_NAME] = cur;
+        return acc;
+    }, {});
     con.awaitEnd();
 })();
