@@ -1,0 +1,16 @@
+{
+  "name": "dbsync",
+  "version": "0.1.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "mocha test"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^8.2.0",
+    "mysql-await": "^2.1.8",
+    "yargs": "^16.2.0"
+  }
+}
