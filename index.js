@@ -16,6 +16,8 @@ const argv = yargs
     .help().alias('help', 'h')
     .argv;
 
+const getPk = (table) => Object.values(table.cols).filter(col => col.COLUMN_KEY === 'PRI');
+
 const getTables = async (con, db) => {
     const cols = await con.awaitQuery(query_cols, db);
     const tables = cols.reduce((acc, cur) => {
@@ -28,11 +30,12 @@ const getTables = async (con, db) => {
 
 const getRowHashes = async (table, con) => {
     const md5s = Object.keys(table.cols).map(name => `md5(IFNULL(\`${name}\`, ''))`)
-    let sql = `select 
+    const pkNames = getPk(table).map(col => `\`${col.COLUMN_NAME}\``);
+    const sql = `select
+                ${pkNames.join(', ')},
                 md5(concat(${md5s.join(', ')})) as hash 
             from \`${table.name}\` 
             order by hash;`;
-
     const hashes = await con.awaitQuery(sql);
     return hashes;
 };
@@ -73,21 +76,31 @@ const getRowHashes = async (table, con) => {
         let srcIdx = 0;
         let dstIdx = 0;
         while(srcIdx < srcHashes.length || dstIdx < dstHashes.length) {
+            let srcHash = srcHashes[srcIdx];
+            let dstHash = dstHashes[dstIdx];
+
             // overflow cases
-            if(srcIdx >= srcHashes.length) {
-                // a -> ab = remove b
+            if(srcHash === undefined) { // a -> ab = remove b
                 dstIdx++;
                 continue;
             }
-            if(dstIdx >= dstHashes.length) {
-                // ab -> a = insert b
+            if(dstHash === undefined) { // ab -> a = insert b
+                const pkVals = getPk(srcTable).map(col => srcHash[col.COLUMN_NAME]);
+                const pkExpr = getPk(srcTable).map(col => `\`${col.COLUMN_NAME}\`=?`);
+                const colNames = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
+                const params = colNames.map(() => '?');
+                const select_sql = `select
+                                        ${colNames.join(', ')}
+                                    from \`${tableName}\`
+                                    where ${pkExpr.join(' and ')}`;
+                const insert_sql = `insert into \`${tableName}\` (${colNames.join(', ')}) 
+                                    values (${params.join(', ')})`;
+                const srcRow = await srcCon.awaitQuery(select_sql, pkVals);
                 srcIdx++;
                 continue;
             }
 
             // normal cases
-            let srcHash = srcHashes[srcIdx];
-            let dstHash = dstHashes[dstIdx];
             if(srcHash.hash > dstHash.hash) { // ac -> abc = delete b
                 // delete from dst
                 dstIdx++;
