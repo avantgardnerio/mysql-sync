@@ -1,19 +1,44 @@
 require('dotenv').config()
-const fs = require('fs').promises;
+const fs = require('fs');
 const mysql = require(`mysql-await`);
 const yargs = require('yargs');
+const _ = require('lodash');
+
+const query_fks = fs.readFileSync("db/queries/get_fks.sql", "utf-8");
+const query_cols = fs.readFileSync("db/queries/get_columns.sql", "utf-8");
 
 const argv = yargs
-    .option('schema', {
-        alias: 's',
-        description: 'Schema to sync',
-        type: 'string',
-    })
+    .option('dst-host', {description: 'Destination host', type: 'string'})
+    .option('dst-port', {description: 'Destination port', type: 'string'})
+    .option('dst-db', {description: 'Destination db name', type: 'string'})
+    .option('dst-user', {description: 'Destination user', type: 'string'})
+    .option('dst-pass', {description: 'Destination password', type: 'string'})
     .help().alias('help', 'h')
     .argv;
 
+const getTables = async (con, db) => {
+    const cols = await con.awaitQuery(query_cols, db);
+    const tables = cols.reduce((acc, cur) => {
+        acc[cur.TABLE_NAME] = acc[cur.TABLE_NAME] || {"name": cur.TABLE_NAME, "cols": {}};
+        acc[cur.TABLE_NAME].cols[cur.COLUMN_NAME] = cur;
+        return acc;
+    }, {});
+    return tables;
+};
+
+const getRowHashes = async (table, con) => {
+    const md5s = Object.keys(table.cols).map(name => `md5(IFNULL(\`${name}\`, ''))`)
+    let sql = `select 
+                md5(concat(${md5s.join(', ')})) as hash 
+            from \`${table.name}\` 
+            order by hash;`;
+
+    const hashes = await con.awaitQuery(sql);
+    return hashes;
+};
+
 (async () => {
-    const config = {
+    const srcConfig = {
         "connectionLimit": 10,
         "host": process.env.DATABASE_PARAMS_HOST,
         "port": process.env.DATABASE_PARAMS_PORT,
@@ -21,27 +46,61 @@ const argv = yargs
         "user": process.env.DATABASE_PARAMS_USERNAME,
         "password": process.env.DATABASE_PARAMS_PASSWORD,
     };
-    const con = mysql.createConnection(config);
-    con.on(`error`, (err) => console.error(`Connection error ${err.code}`));
+    const dstConfig = {
+        "connectionLimit": 10,
+        "host": argv['dst-host'] || '127.0.0.1',
+        "port": argv['dst-port'] || '3306',
+        "database": argv['dst-db'],
+        "user": argv['dst-user'] || 'root',
+        "password": argv['dst-pass'] || '',
+    };
 
-    const fks = await con.awaitQuery(await fs.readFile("db/queries/get_fks.sql", "utf-8"), config.database);
-    const cols = await con.awaitQuery(await fs.readFile("db/queries/get_columns.sql", "utf-8"), config.database);
-    const tables = cols.reduce((acc, cur) => {
-        acc[cur.TABLE_NAME] = acc[cur.TABLE_NAME] || {"name": cur.TABLE_NAME, "cols": {}};
-        acc[cur.TABLE_NAME].cols[cur.COLUMN_NAME] = cur;
-        return acc;
-    }, {});
+    const srcCon = mysql.createConnection(srcConfig);
+    srcCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
+    const dstCon = mysql.createConnection(dstConfig);
+    dstCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
 
-    for(const table of Object.values(tables)) {
-        const md5s = Object.keys(table.cols).map(name => `md5(IFNULL(\`${name}\`, ''))`)
-        let sql = `select 
-                md5(concat(${md5s.join(', ')})) as hash 
-            from \`${table.name}\` 
-            order by hash;`;
+    const srcTables = await getTables(srcCon, srcConfig.database);
+    const dstTables = await getTables(dstCon, dstConfig.database);
 
-        const srcHashes = await con.awaitQuery(sql);
-        console.log(srcHashes)
+    const tableNames = _.intersection(Object.keys(srcTables), Object.keys(dstTables));
+    for(const tableName of tableNames) {
+        console.log(`Syncing ${tableName}...`)
+        const srcTable = srcTables[tableName];
+        const dstTable = dstTables[tableName];
+        const srcHashes = await getRowHashes(srcTable, srcCon);
+        const dstHashes = await getRowHashes(dstTable, dstCon);
+        let srcIdx = 0;
+        let dstIdx = 0;
+        while(srcIdx < srcHashes.length || dstIdx < dstHashes.length) {
+            // overflow cases
+            if(srcIdx >= srcHashes.length) {
+                // a -> ab = remove b
+                dstIdx++;
+                continue;
+            }
+            if(dstIdx >= dstHashes.length) {
+                // ab -> a = insert b
+                srcIdx++;
+                continue;
+            }
+
+            // normal cases
+            let srcHash = srcHashes[srcIdx];
+            let dstHash = dstHashes[dstIdx];
+            if(srcHash.hash > dstHash.hash) { // ac -> abc = delete b
+                // delete from dst
+                dstIdx++;
+            } else if(srcHash.hash < dstHash.hash) { // abc -> ac = insert b
+                // insert into dst
+                srcIdx++;
+            } else { // abc -> abc = no-op
+                srcIdx++;
+                dstIdx++;
+            }
+        }
+        console.log(`Finished ${tableName}`)
     }
 
-    con.awaitEnd();
+    await srcCon.awaitEnd();
 })();
