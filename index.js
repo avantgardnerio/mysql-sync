@@ -86,16 +86,20 @@ const getRowHashes = async (table, con) => {
             }
             if(dstHash === undefined) { // ab -> a = insert b
                 const pkVals = getPk(srcTable).map(col => srcHash[col.COLUMN_NAME]);
-                const pkExpr = getPk(srcTable).map(col => `\`${col.COLUMN_NAME}\`=?`);
+                const pkExpr = getPk(srcTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ');
                 const colNames = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
                 const params = colNames.map(() => '?');
                 const select_sql = `select
                                         ${colNames.join(', ')}
                                     from \`${tableName}\`
-                                    where ${pkExpr.join(' and ')}`;
+                                    where ${pkExpr}`;
                 const insert_sql = `insert into \`${tableName}\` (${colNames.join(', ')}) 
                                     values (${params.join(', ')})`;
-                const srcRow = await srcCon.awaitQuery(select_sql, pkVals);
+                const srcRow = (await srcCon.awaitQuery(select_sql, pkVals))[0];
+                const res = await dstCon.awaitQuery(insert_sql, Object.values(srcRow));
+                if(res.affectedRows !== 1) {
+                    console.warn(`Problem inserting into ${tableName} ${pkExpr} ${pkVals} affected ${res.affectedRows} rows ${res.message}`);
+                }
                 srcIdx++;
                 continue;
             }
