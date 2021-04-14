@@ -76,16 +76,16 @@ const getRowHashes = async (table, con) => {
         let srcIdx = 0;
         let dstIdx = 0;
         while(srcIdx < srcHashes.length || dstIdx < dstHashes.length) {
-            let srcHash = srcHashes[srcIdx];
-            let dstHash = dstHashes[dstIdx];
+            let srcHashRow = srcHashes[srcIdx];
+            let dstHashRow = dstHashes[dstIdx];
+            let srcHash = srcHashRow?.hash || "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+            let dstHash = dstHashRow?.hash || "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
 
-            // overflow cases
-            if(srcHash === undefined) { // a -> ab = remove b
+            if(srcHash > dstHash) { // ac -> abc = delete b
+                // TODO: delete from dst
                 dstIdx++;
-                continue;
-            }
-            if(dstHash === undefined) { // ab -> a = insert b
-                const pkVals = getPk(srcTable).map(col => srcHash[col.COLUMN_NAME]);
+            } else if(srcHash < dstHash) { // abc -> ac = insert b
+                const pkVals = getPk(srcTable).map(col => srcHashRow[col.COLUMN_NAME]);
                 const pkExpr = getPk(srcTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ');
                 const colNames = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
                 const params = colNames.map(() => '?');
@@ -100,16 +100,6 @@ const getRowHashes = async (table, con) => {
                 if(res.affectedRows !== 1) {
                     console.warn(`Problem inserting into ${tableName} ${pkExpr} ${pkVals} affected ${res.affectedRows} rows ${res.message}`);
                 }
-                srcIdx++;
-                continue;
-            }
-
-            // normal cases
-            if(srcHash.hash > dstHash.hash) { // ac -> abc = delete b
-                // delete from dst
-                dstIdx++;
-            } else if(srcHash.hash < dstHash.hash) { // abc -> ac = insert b
-                // insert into dst
                 srcIdx++;
             } else { // abc -> abc = no-op
                 srcIdx++;
