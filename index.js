@@ -4,8 +4,9 @@ const mysql = require(`mysql-await`);
 const yargs = require('yargs');
 const _ = require('lodash');
 
-const query_fks = fs.readFileSync("db/queries/get_fks.sql", "utf-8");
-const query_cols = fs.readFileSync("db/queries/get_columns.sql", "utf-8");
+const batchSize = 100;
+const queryFks = fs.readFileSync("db/queries/get_fks.sql", "utf-8");
+const queryCols = fs.readFileSync("db/queries/get_columns.sql", "utf-8");
 
 const argv = yargs
     .option('dst-host', {description: 'Destination host', type: 'string'})
@@ -19,7 +20,7 @@ const argv = yargs
 const getPk = (table) => Object.values(table.cols).filter(col => col.COLUMN_KEY === 'PRI');
 
 const getTables = async (con, db) => {
-    const cols = await con.awaitQuery(query_cols, db);
+    const cols = await con.awaitQuery(queryCols, db);
     const tables = cols.reduce((acc, cur) => {
         acc[cur.TABLE_NAME] = acc[cur.TABLE_NAME] || {"name": cur.TABLE_NAME, "cols": {}};
         acc[cur.TABLE_NAME].cols[cur.COLUMN_NAME] = cur;
@@ -39,6 +40,16 @@ const getRowHashes = async (table, con) => {
     const hashes = await con.awaitQuery(sql);
     return hashes;
 };
+
+const insertRows = async (dstCon, insertSql, values, tableName, pkExpr, pkVals) => {
+    const sql = `${insertSql} ${values.map(row => `(${row.map(() => `?`).join(', ')})`).join(', ')}`;
+    const flat = values.reduce((acc, cur) => [...acc, ...cur], []);
+    const res = await dstCon.awaitQuery(sql, flat);
+    if (res.affectedRows !== values.length) {
+        console.warn(`Problem inserting into ${tableName} ${pkExpr} ${pkVals} affected ${res.affectedRows} rows ${res.message}`);
+    }
+    values.splice(0, values.length);
+}
 
 (async () => {
     const srcConfig = {
@@ -73,32 +84,31 @@ const getRowHashes = async (table, con) => {
         const dstTable = dstTables[tableName];
         const srcHashes = await getRowHashes(srcTable, srcCon);
         const dstHashes = await getRowHashes(dstTable, dstCon);
+
+        // Build queries
+        const pkExpr = getPk(srcTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ');
+        const colNames = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
+        const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where ${pkExpr}`;
+        const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')}) values `
+        const values = [];
+
         let srcIdx = 0;
         let dstIdx = 0;
         while(srcIdx < srcHashes.length || dstIdx < dstHashes.length) {
             let srcHashRow = srcHashes[srcIdx];
             let dstHashRow = dstHashes[dstIdx];
-            let srcHash = srcHashRow?.hash || "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
-            let dstHash = dstHashRow?.hash || "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+            let srcHash = srcHashRow?.hash || "z";
+            let dstHash = dstHashRow?.hash || "z";
 
             if(srcHash > dstHash) { // ac -> abc = delete b
                 // TODO: delete from dst
                 dstIdx++;
             } else if(srcHash < dstHash) { // abc -> ac = insert b
                 const pkVals = getPk(srcTable).map(col => srcHashRow[col.COLUMN_NAME]);
-                const pkExpr = getPk(srcTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ');
-                const colNames = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
-                const params = colNames.map(() => '?');
-                const select_sql = `select
-                                        ${colNames.join(', ')}
-                                    from \`${tableName}\`
-                                    where ${pkExpr}`;
-                const insert_sql = `insert into \`${tableName}\` (${colNames.join(', ')}) 
-                                    values (${params.join(', ')})`;
-                const srcRow = (await srcCon.awaitQuery(select_sql, pkVals))[0];
-                const res = await dstCon.awaitQuery(insert_sql, Object.values(srcRow));
-                if(res.affectedRows !== 1) {
-                    console.warn(`Problem inserting into ${tableName} ${pkExpr} ${pkVals} affected ${res.affectedRows} rows ${res.message}`);
+                const srcRow = (await srcCon.awaitQuery(selectSql, pkVals))[0];
+                values.push(Object.values(srcRow));
+                if(values.length === batchSize) {
+                    await insertRows(dstCon, insertSql, values, tableName, pkExpr, pkVals);
                 }
                 srcIdx++;
             } else { // abc -> abc = no-op
@@ -106,6 +116,7 @@ const getRowHashes = async (table, con) => {
                 dstIdx++;
             }
         }
+        await insertRows(dstCon, insertSql, values, tableName, pkExpr, pkVals);
         console.log(`Finished ${tableName}`)
     }
 
