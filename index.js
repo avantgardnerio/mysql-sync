@@ -37,6 +37,12 @@ const getRowHashes = async (table, con, pk) => {
     return hashes;
 };
 
+const getRowCount = async (tableName, con) => {
+    const sql = `select count(*) as cnt from \`${tableName}\``;
+    const res = (await con.awaitQuery(sql))[0].cnt;
+    return res;
+};
+
 const insertRows = async (dstCon, insertSql, values, tableName, pkExpr) => {
     if(values.length === 0) return;
     const sql = `${insertSql} ${values.map(row => `(${row.map(() => `?`).join(', ')})`).join(', ')}`;
@@ -138,13 +144,17 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
     dstCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
     await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=0;`);
     try {
-
         const srcTables = await getTables(srcCon, srcConfig.database);
         const dstTables = await getTables(dstCon, dstConfig.database);
 
         const tableNames = _.intersection(Object.keys(srcTables), Object.keys(dstTables));
         for (const tableName of tableNames) {
-            console.log(`Syncing ${tableName}...`)
+            const rowCount = await getRowCount(tableName, srcCon);
+            if(rowCount > 1000000) {
+                console.warn(`Skipping large table ${tableName} with ${rowCount} rows...`);
+                continue;
+            }
+            console.log(`Syncing ${rowCount} rows on table ${tableName}...`)
             const srcTable = srcTables[tableName];
             const dstTable = dstTables[tableName];
             if (Object.values(srcTable.cols).filter(col => col.DATA_TYPE === 'geometry').length > 0) {
