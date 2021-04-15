@@ -52,6 +52,17 @@ const insertRows = async (dstCon, insertSql, values, tableName, pkExpr) => {
     values.splice(0, values.length);
 }
 
+const deleteRows = async (dstCon, deleteSql, values, tableName, pkExpr) => {
+    if(values.length === 0) return;
+    const sql = `${deleteSql} (${values.map(() => pkExpr).join(' or ')})`;
+    const flat = values.reduce((acc, cur) => [...acc, ...cur], []);
+    const res = await dstCon.awaitQuery(sql, flat);
+    if (res.affectedRows !== values.length) {
+        console.warn(`Problem deleting from ${tableName} ${pkExpr} affected ${res.affectedRows} rows ${res.message}`);
+    }
+    values.splice(0, values.length);
+};
+
 const selectRows = async (selectSql, queryVals, pkExpr, srcCon) => {
     if(queryVals.length === 0) return [];
     const sql = `${selectSql} (${queryVals.map(() => pkExpr).join(' or ')})`;
@@ -60,7 +71,14 @@ const selectRows = async (selectSql, queryVals, pkExpr, srcCon) => {
     const insertVals = srcRows.map(row => Object.values(row));
     queryVals.splice(0, queryVals.length);
     return insertVals;
-}
+};
+
+const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql) => {
+    deleteVals.push(...queryVals);
+    await deleteRows(dstCon, deleteSql, deleteVals, tableName, pkExpr);
+    const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon);
+    await insertRows(dstCon, insertSql, insertVals, tableName, pkExpr);
+};
 
 (async () => {
     const srcConfig = {
@@ -84,52 +102,65 @@ const selectRows = async (selectSql, queryVals, pkExpr, srcCon) => {
     srcCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
     const dstCon = mysql.createConnection(dstConfig);
     dstCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
+    await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=0;`);
+    try {
 
-    const srcTables = await getTables(srcCon, srcConfig.database);
-    const dstTables = await getTables(dstCon, dstConfig.database);
+        const srcTables = await getTables(srcCon, srcConfig.database);
+        const dstTables = await getTables(dstCon, dstConfig.database);
 
-    const tableNames = _.intersection(Object.keys(srcTables), Object.keys(dstTables));
-    for(const tableName of tableNames) {
-        console.log(`Syncing ${tableName}...`)
-        const srcTable = srcTables[tableName];
-        const dstTable = dstTables[tableName];
-        const srcHashes = await getRowHashes(srcTable, srcCon);
-        const dstHashes = await getRowHashes(dstTable, dstCon);
-
-        // Build queries
-        const pkExpr = `(${getPk(srcTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
-        const colNames = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
-        const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where `;
-        const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')}) values `
-        const queryVals = [];
-
-        let srcIdx = 0;
-        let dstIdx = 0;
-        while(srcIdx < srcHashes.length || dstIdx < dstHashes.length) {
-            let srcHashRow = srcHashes[srcIdx];
-            let dstHashRow = dstHashes[dstIdx];
-            let srcHash = srcHashRow?.hash || "z";
-            let dstHash = dstHashRow?.hash || "z";
-
-            if(srcHash > dstHash) { // ac -> abc = delete b
-                // TODO: delete from dst
-                dstIdx++;
-            } else if(srcHash < dstHash) { // abc -> ac = insert b
-                const pkVals = getPk(srcTable).map(col => srcHashRow[col.COLUMN_NAME]);
-                queryVals.push(pkVals);
-                if(queryVals.length === batchSize) {
-                    const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon);
-                    await insertRows(dstCon, insertSql, insertVals, tableName, pkExpr);
-                }
-                srcIdx++;
-            } else { // abc -> abc = no-op
-                srcIdx++;
-                dstIdx++;
+        const tableNames = _.intersection(Object.keys(srcTables), Object.keys(dstTables));
+        for (const tableName of tableNames) {
+            console.log(`Syncing ${tableName}...`)
+            const srcTable = srcTables[tableName];
+            const dstTable = dstTables[tableName];
+            if (Object.values(srcTable.cols).filter(col => col.DATA_TYPE === 'geometry').length > 0) {
+                console.warn(`Skipping table, type not implemented: geometry`);
+                continue;
             }
+            const srcHashes = await getRowHashes(srcTable, srcCon);
+            const dstHashes = await getRowHashes(dstTable, dstCon);
+
+            // Build queries
+            const pkExpr = `(${getPk(srcTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
+            const colNames = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
+            const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where `;
+            const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')}) values `
+            const deleteSql = `delete from \`${tableName}\` where `
+            const queryVals = [];
+            const deleteVals = [];
+
+            let srcIdx = 0;
+            let dstIdx = 0;
+            while (srcIdx < srcHashes.length || dstIdx < dstHashes.length) {
+                let srcHashRow = srcHashes[srcIdx];
+                let dstHashRow = dstHashes[dstIdx];
+                let srcHash = srcHashRow?.hash || "z";
+                let dstHash = dstHashRow?.hash || "z";
+
+                // cache values to insert or delete
+                if (srcHash > dstHash) { // ac -> abc = delete b
+                    const pkVals = getPk(srcTable).map(col => srcHashRow[col.COLUMN_NAME]);
+                    deleteVals.push(pkVals);
+                    dstIdx++;
+                } else if (srcHash < dstHash) { // abc -> ac = insert b
+                    const pkVals = getPk(srcTable).map(col => srcHashRow[col.COLUMN_NAME]);
+                    queryVals.push(pkVals);
+                    srcIdx++;
+                } else { // abc -> abc = no-op
+                    srcIdx++;
+                    dstIdx++;
+                }
+
+                // execute a query batch
+                if (deleteVals.length + queryVals.length === batchSize) {
+                    await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql);
+                }
+            }
+            await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql);
+            console.log(`Finished ${tableName}`)
         }
-        const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon);
-        await insertRows(dstCon, insertSql, insertVals, tableName, pkExpr);
-        console.log(`Finished ${tableName}`)
+    } finally {
+        await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=1;`);
     }
 
     await srcCon.awaitEnd();
