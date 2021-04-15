@@ -45,10 +45,14 @@ const insertRows = async (dstCon, insertSql, values, tableName, pkExpr) => {
     if(values.length === 0) return;
     const sql = `${insertSql} ${values.map(row => `(${row.map(() => `?`).join(', ')})`).join(', ')}`;
     const flat = values.reduce((acc, cur) => [...acc, ...cur], []);
-    const res = await dstCon.awaitQuery(sql, flat);
-    if (res.affectedRows !== values.length) {
-        console.warn(`Problem inserting into ${tableName} ${pkExpr} affected ${res.affectedRows} rows ${res.message}`);
-    }
+    // try {
+        const res = await dstCon.awaitQuery(sql, flat);
+        if (res.affectedRows !== values.length) {
+            console.warn(`Problem inserting into ${tableName} ${pkExpr} affected ${res.affectedRows} rows ${res.message}`);
+        }
+    // } catch (ex) {
+    //     throw ex;
+    // }
     values.splice(0, values.length);
 }
 
@@ -57,26 +61,36 @@ const deleteRows = async (dstCon, deleteSql, values, tableName, pkExpr) => {
     const sql = `${deleteSql} (${values.map(() => pkExpr).join(' or ')})`;
     const flat = values.reduce((acc, cur) => [...acc, ...cur], []);
     const res = await dstCon.awaitQuery(sql, flat);
-    if (res.affectedRows !== values.length) {
-        console.warn(`Problem deleting from ${tableName} ${pkExpr} affected ${res.affectedRows} rows ${res.message}`);
-    }
     values.splice(0, values.length);
 };
 
-const selectRows = async (selectSql, queryVals, pkExpr, srcCon) => {
+const selectRows = async (selectSql, queryVals, pkExpr, srcCon, srcTable) => {
     if(queryVals.length === 0) return [];
     const sql = `${selectSql} (${queryVals.map(() => pkExpr).join(' or ')})`;
     const flat = queryVals.reduce((acc, cur) => [...acc, ...cur], []);
     const srcRows = (await srcCon.awaitQuery(sql, flat));
     const insertVals = srcRows.map(row => Object.values(row));
+    const keys = Object.keys(srcTable.cols);
+    for(let idx = 0; idx < keys.length; idx++) {
+        const key = keys[idx];
+        const col = srcTable.cols[key];
+        if(col.COLUMN_TYPE !== 'date') continue;
+        for(let row of insertVals) {
+            const val = row[idx];
+            if(val === '0000-00-00') {
+                console.log("Fixed null date");
+                row[idx] = null;
+            }
+        }
+    }
     queryVals.splice(0, queryVals.length);
     return insertVals;
 };
 
-const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql) => {
+const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, srcTable) => {
     deleteVals.push(...queryVals);
     await deleteRows(dstCon, deleteSql, deleteVals, tableName, pkExpr);
-    const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon);
+    const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon, srcTable);
     await insertRows(dstCon, insertSql, insertVals, tableName, pkExpr);
 };
 
@@ -153,10 +167,10 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
 
                 // execute a query batch
                 if (deleteVals.length + queryVals.length === batchSize) {
-                    await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql);
+                    await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, srcTable);
                 }
             }
-            await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql);
+            await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, srcTable);
             console.log(`Finished ${tableName}`)
         }
     } finally {
