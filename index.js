@@ -29,14 +29,10 @@ const getTables = async (con, db) => {
     return tables;
 };
 
-const getRowHashes = async (table, con) => {
-    const md5s = Object.keys(table.cols).map(name => `md5(IFNULL(\`${name}\`, ''))`)
-    const pkNames = getPk(table).map(col => `\`${col.COLUMN_NAME}\``);
-    const sql = `select
-                ${pkNames.join(', ')},
-                md5(concat(${md5s.join(', ')})) as hash 
-            from \`${table.name}\` 
-            order by hash;`;
+const getRowHashes = async (table, con, pk) => {
+    const md5s = Object.keys(table.cols).map(name => `md5(IFNULL(\`${name}\`, ''))`).join(', ');
+    const pkNames = pk.map(col => `\`${col.COLUMN_NAME}\``).join(', ');
+    const sql = `select ${pkNames}, md5(concat(${md5s})) as hash from \`${table.name}\` order by hash;`;
     const hashes = await con.awaitQuery(sql);
     return hashes;
 };
@@ -64,22 +60,46 @@ const deleteRows = async (dstCon, deleteSql, values, tableName, pkExpr) => {
     values.splice(0, values.length);
 };
 
-const selectRows = async (selectSql, queryVals, pkExpr, srcCon, srcTable) => {
+const selectRows = async (selectSql, queryVals, pkExpr, srcCon, dstTable) => {
     if(queryVals.length === 0) return [];
     const sql = `${selectSql} (${queryVals.map(() => pkExpr).join(' or ')})`;
     const flat = queryVals.reduce((acc, cur) => [...acc, ...cur], []);
     const srcRows = (await srcCon.awaitQuery(sql, flat));
     const insertVals = srcRows.map(row => Object.values(row));
-    const keys = Object.keys(srcTable.cols);
+    const keys = Object.keys(dstTable.cols);
     for(let idx = 0; idx < keys.length; idx++) {
         const key = keys[idx];
-        const col = srcTable.cols[key];
-        if(col.COLUMN_TYPE !== 'date') continue;
-        for(let row of insertVals) {
-            const val = row[idx];
-            if(val === '0000-00-00') {
-                console.log("Fixed null date");
-                row[idx] = null;
+        const col = dstTable.cols[key];
+        if(col.COLUMN_TYPE === 'date') {
+            for(let row of insertVals) {
+                const val = row[idx];
+                if(val === '0000-00-00') {
+                    row[idx] = null;
+                }
+            }
+        }
+        if(col.COLUMN_TYPE === 'datetime') {
+            for(let row of insertVals) {
+                const val = row[idx];
+                if(val === '0000-00-00 00:00:00') {
+                    row[idx] = null;
+                }
+            }
+        }
+        if(col.COLUMN_TYPE === 'timestamp') {
+            for(let row of insertVals) {
+                const val = row[idx];
+                if(val === '0000-00-00 00:00:00') {
+                    row[idx] = null;
+                }
+            }
+        }
+        if(col.COLUMN_TYPE.startsWith('enum')) {
+            for(let row of insertVals) {
+                const val = row[idx];
+                if(val === '') {
+                    row[idx] = null;
+                }
             }
         }
     }
@@ -87,10 +107,10 @@ const selectRows = async (selectSql, queryVals, pkExpr, srcCon, srcTable) => {
     return insertVals;
 };
 
-const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, srcTable) => {
+const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable) => {
     deleteVals.push(...queryVals);
-    await deleteRows(dstCon, deleteSql, deleteVals, tableName, pkExpr);
-    const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon, srcTable);
+    await deleteRows(dstCon, deleteSql, deleteVals, tableName, pkExpr, dstTable);
+    const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon, dstTable);
     await insertRows(dstCon, insertSql, insertVals, tableName, pkExpr);
 };
 
@@ -131,11 +151,11 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
                 console.warn(`Skipping table, type not implemented: geometry`);
                 continue;
             }
-            const srcHashes = await getRowHashes(srcTable, srcCon);
-            const dstHashes = await getRowHashes(dstTable, dstCon);
+            const srcHashes = await getRowHashes(srcTable, srcCon, getPk(dstTable));
+            const dstHashes = await getRowHashes(dstTable, dstCon, getPk(dstTable));
 
             // Build queries
-            const pkExpr = `(${getPk(srcTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
+            const pkExpr = `(${getPk(dstTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
             const colNames = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
             const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where `;
             const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')}) values `
@@ -153,11 +173,11 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
 
                 // cache values to insert or delete
                 if (srcHash > dstHash) { // ac -> abc = delete b
-                    const pkVals = getPk(srcTable).map(col => srcHashRow[col.COLUMN_NAME]);
+                    const pkVals = getPk(dstTable).map(col => srcHashRow[col.COLUMN_NAME]);
                     deleteVals.push(pkVals);
                     dstIdx++;
                 } else if (srcHash < dstHash) { // abc -> ac = insert b
-                    const pkVals = getPk(srcTable).map(col => srcHashRow[col.COLUMN_NAME]);
+                    const pkVals = getPk(dstTable).map(col => srcHashRow[col.COLUMN_NAME]);
                     queryVals.push(pkVals);
                     srcIdx++;
                 } else { // abc -> abc = no-op
@@ -167,10 +187,10 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
 
                 // execute a query batch
                 if (deleteVals.length + queryVals.length === batchSize) {
-                    await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, srcTable);
+                    await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
                 }
             }
-            await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, srcTable);
+            await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
             console.log(`Finished ${tableName}`)
         }
     } finally {
