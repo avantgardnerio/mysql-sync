@@ -4,7 +4,8 @@ const mysql = require(`mysql-await`);
 const yargs = require('yargs');
 const _ = require('lodash');
 
-const batchSize = 500;
+// TODO: ensure batchSize results in less than max packet size https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html#sysvar_max_allowed_packet
+const batchSize = 400;
 const queryFks = fs.readFileSync("db/queries/get_fks.sql", "utf-8");
 const queryCols = fs.readFileSync("db/queries/get_columns.sql", "utf-8");
 
@@ -150,7 +151,7 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
         const tableNames = _.intersection(Object.keys(srcTables), Object.keys(dstTables));
         for (const tableName of tableNames) {
             const rowCount = await getRowCount(tableName, srcCon);
-            if(rowCount > 1000000) {
+            if(rowCount > 500000) {
                 console.warn(`Skipping large table ${tableName} with ${rowCount} rows...`);
                 continue;
             }
@@ -204,7 +205,7 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
             console.log(`Finished ${tableName}`)
         }
     } finally {
-        await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=1;`);
+        // await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=1;`);
     }
 
     await srcCon.awaitEnd();
