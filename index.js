@@ -4,7 +4,7 @@ const mysql = require(`mysql-await`);
 const yargs = require('yargs');
 const _ = require('lodash');
 
-const batchSize = 100;
+const batchSize = 500;
 const queryFks = fs.readFileSync("db/queries/get_fks.sql", "utf-8");
 const queryCols = fs.readFileSync("db/queries/get_columns.sql", "utf-8");
 
@@ -41,14 +41,23 @@ const getRowHashes = async (table, con) => {
     return hashes;
 };
 
-const insertRows = async (dstCon, insertSql, values, tableName, pkExpr, pkVals) => {
+const insertRows = async (dstCon, insertSql, values, tableName, pkExpr) => {
     const sql = `${insertSql} ${values.map(row => `(${row.map(() => `?`).join(', ')})`).join(', ')}`;
     const flat = values.reduce((acc, cur) => [...acc, ...cur], []);
     const res = await dstCon.awaitQuery(sql, flat);
     if (res.affectedRows !== values.length) {
-        console.warn(`Problem inserting into ${tableName} ${pkExpr} ${pkVals} affected ${res.affectedRows} rows ${res.message}`);
+        console.warn(`Problem inserting into ${tableName} ${pkExpr} affected ${res.affectedRows} rows ${res.message}`);
     }
     values.splice(0, values.length);
+}
+
+const selectRows = async (selectSql, queryVals, pkExpr, srcCon) => {
+    const sql = `${selectSql} (${queryVals.map(() => pkExpr).join(' or ')})`;
+    const flat = queryVals.reduce((acc, cur) => [...acc, ...cur], []);
+    const srcRows = (await srcCon.awaitQuery(sql, flat));
+    const insertVals = srcRows.map(row => Object.values(row));
+    queryVals.splice(0, queryVals.length);
+    return insertVals;
 }
 
 (async () => {
@@ -86,11 +95,11 @@ const insertRows = async (dstCon, insertSql, values, tableName, pkExpr, pkVals) 
         const dstHashes = await getRowHashes(dstTable, dstCon);
 
         // Build queries
-        const pkExpr = getPk(srcTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ');
+        const pkExpr = `(${getPk(srcTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
         const colNames = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
-        const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where ${pkExpr}`;
+        const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where `;
         const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')}) values `
-        const values = [];
+        const queryVals = [];
 
         let srcIdx = 0;
         let dstIdx = 0;
@@ -105,10 +114,10 @@ const insertRows = async (dstCon, insertSql, values, tableName, pkExpr, pkVals) 
                 dstIdx++;
             } else if(srcHash < dstHash) { // abc -> ac = insert b
                 const pkVals = getPk(srcTable).map(col => srcHashRow[col.COLUMN_NAME]);
-                const srcRow = (await srcCon.awaitQuery(selectSql, pkVals))[0];
-                values.push(Object.values(srcRow));
-                if(values.length === batchSize) {
-                    await insertRows(dstCon, insertSql, values, tableName, pkExpr, pkVals);
+                queryVals.push(pkVals);
+                if(queryVals.length === batchSize) {
+                    const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon);
+                    await insertRows(dstCon, insertSql, insertVals, tableName, pkExpr);
                 }
                 srcIdx++;
             } else { // abc -> abc = no-op
@@ -116,7 +125,8 @@ const insertRows = async (dstCon, insertSql, values, tableName, pkExpr, pkVals) 
                 dstIdx++;
             }
         }
-        await insertRows(dstCon, insertSql, values, tableName, pkExpr, pkVals);
+        const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon);
+        await insertRows(dstCon, insertSql, insertVals, tableName, pkExpr);
         console.log(`Finished ${tableName}`)
     }
 
