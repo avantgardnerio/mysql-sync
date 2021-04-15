@@ -42,6 +42,7 @@ const getRowHashes = async (table, con) => {
 };
 
 const insertRows = async (dstCon, insertSql, values, tableName, pkExpr) => {
+    if(values.length === 0) return;
     const sql = `${insertSql} ${values.map(row => `(${row.map(() => `?`).join(', ')})`).join(', ')}`;
     const flat = values.reduce((acc, cur) => [...acc, ...cur], []);
     const res = await dstCon.awaitQuery(sql, flat);
@@ -52,6 +53,7 @@ const insertRows = async (dstCon, insertSql, values, tableName, pkExpr) => {
 }
 
 const selectRows = async (selectSql, queryVals, pkExpr, srcCon) => {
+    if(queryVals.length === 0) return [];
     const sql = `${selectSql} (${queryVals.map(() => pkExpr).join(' or ')})`;
     const flat = queryVals.reduce((acc, cur) => [...acc, ...cur], []);
     const srcRows = (await srcCon.awaitQuery(sql, flat));
@@ -131,4 +133,6 @@ const selectRows = async (selectSql, queryVals, pkExpr, srcCon) => {
     }
 
     await srcCon.awaitEnd();
-})();
+})().catch((ex) => {
+    throw ex;
+});
