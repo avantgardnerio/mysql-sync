@@ -221,7 +221,11 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
             console.log(`Finished ${tableName}`)
         }
     } finally {
-        await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=1;`);
+        try {
+            await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=1;`);
+        } catch (ex) {
+            console.warn("Unable to re-enable constraints. Try running it again.")
+        }
     }
 
     await srcCon.awaitEnd();
