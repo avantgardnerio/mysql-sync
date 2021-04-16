@@ -3,9 +3,10 @@ const fs = require('fs');
 const mysql = require(`mysql-await`);
 const yargs = require('yargs');
 const _ = require('lodash');
+const cliProgress = require('cli-progress');
 
 // TODO: ensure batchSize results in less than max packet size https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html#sysvar_max_allowed_packet
-const batchSize = 400;
+const batchSize = 300; // max_allowed_packet=67108864
 const queryFks = fs.readFileSync("db/queries/get_fks.sql", "utf-8");
 const queryCols = fs.readFileSync("db/queries/get_columns.sql", "utf-8");
 
@@ -148,14 +149,22 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
         const srcTables = await getTables(srcCon, srcConfig.database);
         const dstTables = await getTables(dstCon, dstConfig.database);
 
+        let running = true;
         const tableNames = _.intersection(Object.keys(srcTables), Object.keys(dstTables));
         for (const tableName of tableNames) {
+            if(tableName === 'xxx') { // for debugging
+                running = true;
+            }
+            if(!running) continue;
             const rowCount = await getRowCount(tableName, srcCon);
             if(rowCount > 500000) {
                 console.warn(`Skipping large table ${tableName} with ${rowCount} rows...`);
                 continue;
             }
             console.log(`Syncing ${rowCount} rows on table ${tableName}...`)
+            const progress = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic);
+            progress.start(rowCount, 0);
+
             const srcTable = srcTables[tableName];
             const dstTable = dstTables[tableName];
             if (Object.values(srcTable.cols).filter(col => col.DATA_TYPE === 'geometry').length > 0) {
@@ -184,7 +193,12 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
 
                 // cache values to insert or delete
                 if (srcHash > dstHash) { // ac -> abc = delete b
-                    const pkVals = getPk(dstTable).map(col => srcHashRow[col.COLUMN_NAME]);
+                    const pkVals = getPk(dstTable).map(col => {
+                        if(srcHashRow === undefined) {
+                            console.log(`${srcHashRow} ${dstHashRow} ${srcHash} ${dstHash}`);
+                        }
+                        return srcHashRow[col.COLUMN_NAME];
+                    });
                     deleteVals.push(pkVals);
                     dstIdx++;
                 } else if (srcHash < dstHash) { // abc -> ac = insert b
@@ -199,16 +213,19 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
                 // execute a query batch
                 if (deleteVals.length + queryVals.length === batchSize) {
                     await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
+                    progress.update(srcIdx);
                 }
             }
             await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
+            progress.stop();
             console.log(`Finished ${tableName}`)
         }
     } finally {
-        // await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=1;`);
+        await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=1;`);
     }
 
     await srcCon.awaitEnd();
+    await dstCon.awaitEnd();
 })().catch((ex) => {
     throw ex;
 });

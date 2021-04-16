@@ -9,6 +9,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "cli-progress": "^3.9.0",
     "dotenv": "^8.2.0",
     "lodash": "^4.17.21",
     "mysql-await": "^2.1.8",
