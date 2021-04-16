@@ -214,14 +214,9 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
                 // Build queries
                 const pkExpr = `(${getPk(dstTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
                 const colNames = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
-                const selectSql = `select ${colNames.join(', ')}
-                                   from \`${tableName}\`
-                                   where `;
-                const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')})
-                                   values `
-                const deleteSql = `delete
-                                   from \`${tableName}\`
-                                   where `
+                const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where `;
+                const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')}) values `;
+                const deleteSql = `delete from \`${tableName}\` where `;
                 const queryVals = [];
                 const deleteVals = [];
 
@@ -230,7 +225,6 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
                 while (srcIdx < srcHashes.length || dstIdx < dstHashes.length) {
                     let srcHashRow = srcHashes[srcIdx];
                     let dstHashRow = dstHashes[dstIdx];
-                    // TODO: the following trick is no longer viable with arbitrary sized arrays
                     let srcKey = srcHashRow?.pk || MAX_KEY;
                     let dstKey = dstHashRow?.pk || MAX_KEY;
 
