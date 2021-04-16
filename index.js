@@ -55,12 +55,17 @@ const row2hash = (row) => {
     }
 }
 
-const getSrcHashes = async (table, con, pkCols, page = 0) => {
-    const offset = page * limit;
+const getSrcHashes = async (table, con, pkCols, lastPk) => {
+    let whereClause = ``;
+    let params = [];
+    if(lastPk !== undefined) {
+        whereClause = `where ${pkCols.map(col => `\`${col.COLUMN_NAME}\` > ?`).join(' and ')}`
+        params = lastPk;
+    }
     const md5s = Object.keys(table.cols).map(name => `md5(IFNULL(\`${name}\`, ''))`).join(', ');
     const pkNames = pkCols.map(col => `\`${col.COLUMN_NAME}\``).join(', ');
-    const sql = `select ${pkNames}, md5(concat(${md5s})) as hash from \`${table.name}\` order by ${pkNames} limit ${limit} offset ${offset}`;
-    const hashes = await con.awaitQuery(sql);
+    const sql = `select ${pkNames}, md5(concat(${md5s})) as hash from \`${table.name}\` ${whereClause} order by ${pkNames} limit ${limit}`;
+    const hashes = await con.awaitQuery(sql, params);
     const rows = hashes.map(row => row2hash(row));
     return rows;
 };
@@ -205,8 +210,9 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
                 console.warn(`Skipping table, type not implemented: geometry`);
                 continue;
             }
+            let lastPk;
             for(let page = 0; ; page++) {
-                const srcHashes = await getSrcHashes(srcTable, srcCon, getPk(dstTable), page);
+                const srcHashes = await getSrcHashes(srcTable, srcCon, getPk(dstTable), lastPk);
                 const min = srcHashes[0].pk;
                 const max = srcHashes[srcHashes.length - 1].pk;
                 const dstHashes = await getDstHashes(dstTable, dstCon, getPk(dstTable), min, max);
@@ -225,6 +231,8 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
                 while (srcIdx < srcHashes.length || dstIdx < dstHashes.length) {
                     let srcHashRow = srcHashes[srcIdx];
                     let dstHashRow = dstHashes[dstIdx];
+                    if(srcHashRow !== undefined) lastPk = srcHashRow.pk;
+                    if(dstHashRow !== undefined) lastPk = dstHashRow.pk;
                     let srcKey = srcHashRow?.pk || MAX_KEY;
                     let dstKey = dstHashRow?.pk || MAX_KEY;
 
@@ -244,7 +252,7 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
                     // execute a query batch
                     if (deleteVals.length + queryVals.length === batchSize) {
                         await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
-                        progress.update(page * limit + srcIdx);
+                        progress.update(page * limit + srcIdx); // TODO: move out of if for faster progress updates
                     }
                 }
                 await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
