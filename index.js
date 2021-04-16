@@ -7,6 +7,7 @@ const cliProgress = require('cli-progress');
 
 // TODO: ensure batchSize results in less than max packet size https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html#sysvar_max_allowed_packet
 const batchSize = 300; // max_allowed_packet=67108864
+const limit = 10 * batchSize;
 const queryFks = fs.readFileSync("db/queries/get_fks.sql", "utf-8");
 const queryCols = fs.readFileSync("db/queries/get_columns.sql", "utf-8");
 
@@ -16,6 +17,7 @@ const argv = yargs
     .option('dst-db', {description: 'Destination db name', type: 'string'})
     .option('dst-user', {description: 'Destination user', type: 'string'})
     .option('dst-pass', {description: 'Destination password', type: 'string'})
+    .option('first-table', {description: 'Name of first table to sync', type: 'string'})
     .help().alias('help', 'h')
     .argv;
 
@@ -31,12 +33,33 @@ const getTables = async (con, db) => {
     return tables;
 };
 
-const getRowHashes = async (table, con, pk) => {
+const row2hash = (row) => {
+    return {
+        pk: Object.keys(row).filter(colName => colName !== 'hash').map(colName => row[colName]).reduce((acc, cur) => [...acc, cur], []),
+        hash: row.hash
+    }
+}
+
+const getSrcHashes = async (table, con, pkCols, page = 0) => {
+    const offset = page * limit;
     const md5s = Object.keys(table.cols).map(name => `md5(IFNULL(\`${name}\`, ''))`).join(', ');
-    const pkNames = pk.map(col => `\`${col.COLUMN_NAME}\``).join(', ');
-    const sql = `select ${pkNames}, md5(concat(${md5s})) as hash from \`${table.name}\` order by hash;`;
+    const pkNames = pkCols.map(col => `\`${col.COLUMN_NAME}\``).join(', ');
+    const sql = `select ${pkNames}, md5(concat(${md5s})) as hash from \`${table.name}\` order by ${pkNames} limit ${limit} offset ${offset}`;
     const hashes = await con.awaitQuery(sql);
-    return hashes;
+    const rows = hashes.map(row => row2hash(row));
+    return rows;
+};
+
+const getDstHashes = async (table, con, pkCols, min, max) => {
+    const md5s = Object.keys(table.cols).map(name => `md5(IFNULL(\`${name}\`, ''))`).join(', ');
+    const pkNames = pkCols.map(col => `\`${col.COLUMN_NAME}\``).join(', ');
+    const minClause = pkCols.map(col => `\`${col.COLUMN_NAME}\` >= ?`).join(' and ');
+    const maxClause = pkCols.map(col => `\`${col.COLUMN_NAME}\` <= ?`).join(' and ');
+    const sql = `select ${pkNames}, md5(concat(${md5s})) as hash from \`${table.name}\` where ${minClause} and ${maxClause} order by ${pkNames}`;
+    const params = [...min, ...max];
+    const hashes = await con.awaitQuery(sql, params);
+    const rows = hashes.map(row => row2hash(row));
+    return rows;
 };
 
 const getRowCount = async (tableName, con) => {
@@ -149,18 +172,14 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
         const srcTables = await getTables(srcCon, srcConfig.database);
         const dstTables = await getTables(dstCon, dstConfig.database);
 
-        let running = true;
+        let running = argv['first-table'] === undefined;
         const tableNames = _.intersection(Object.keys(srcTables), Object.keys(dstTables));
         for (const tableName of tableNames) {
-            if(tableName === 'xxx') { // for debugging
+            if(tableName === argv['first-table']) { // for debugging
                 running = true;
             }
             if(!running) continue;
             const rowCount = await getRowCount(tableName, srcCon);
-            if(rowCount > 500000) {
-                console.warn(`Skipping large table ${tableName} with ${rowCount} rows...`);
-                continue;
-            }
             console.log(`Syncing ${rowCount} rows on table ${tableName}...`)
             const progress = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic);
             progress.start(rowCount, 0);
@@ -171,8 +190,11 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
                 console.warn(`Skipping table, type not implemented: geometry`);
                 continue;
             }
-            const srcHashes = await getRowHashes(srcTable, srcCon, getPk(dstTable));
-            const dstHashes = await getRowHashes(dstTable, dstCon, getPk(dstTable));
+            let page = 0;
+            const srcHashes = await getSrcHashes(srcTable, srcCon, getPk(dstTable), page);
+            const min = srcHashes[0].pk;
+            const max = srcHashes[srcHashes.length - 1].pk;
+            const dstHashes = await getDstHashes(dstTable, dstCon, getPk(dstTable), min, max);
 
             // Build queries
             const pkExpr = `(${getPk(dstTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
