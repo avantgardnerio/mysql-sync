@@ -21,6 +21,21 @@ const argv = yargs
     .help().alias('help', 'h')
     .argv;
 
+const MAX_KEY = 'MAX_KEY';
+const cmpKey = (a, b) => {
+    // Handy to have min & max values vs undefined
+    if(a === MAX_KEY && b === MAX_KEY) return 0;
+    if(a === MAX_KEY) return 1;
+    if(b === MAX_KEY) return -1;
+
+    if(a.length !== b.length) throw new Error("Invalid key!");
+    for(let idx = 0; idx < a.length; idx++) {
+        if(a[idx] < b[idx]) return -1;
+        if(a[idx] > b[idx]) return -1;
+    }
+    return 0;
+};
+
 const getPk = (table) => Object.values(table.cols).filter(col => col.COLUMN_KEY === 'PRI');
 
 const getTables = async (con, db) => {
@@ -180,7 +195,7 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
             }
             if(!running) continue;
             const rowCount = await getRowCount(tableName, srcCon);
-            console.log(`Syncing ${rowCount} rows on table ${tableName}...`)
+            console.log(`Syncing ${rowCount} rows on table ${tableName}...`);
             const progress = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic);
             progress.start(rowCount, 0);
 
@@ -190,55 +205,57 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
                 console.warn(`Skipping table, type not implemented: geometry`);
                 continue;
             }
-            let page = 0;
-            const srcHashes = await getSrcHashes(srcTable, srcCon, getPk(dstTable), page);
-            const min = srcHashes[0].pk;
-            const max = srcHashes[srcHashes.length - 1].pk;
-            const dstHashes = await getDstHashes(dstTable, dstCon, getPk(dstTable), min, max);
+            for(let page = 0; ; page++) {
+                const srcHashes = await getSrcHashes(srcTable, srcCon, getPk(dstTable), page);
+                const min = srcHashes[0].pk;
+                const max = srcHashes[srcHashes.length - 1].pk;
+                const dstHashes = await getDstHashes(dstTable, dstCon, getPk(dstTable), min, max);
 
-            // Build queries
-            const pkExpr = `(${getPk(dstTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
-            const colNames = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
-            const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where `;
-            const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')}) values `
-            const deleteSql = `delete from \`${tableName}\` where `
-            const queryVals = [];
-            const deleteVals = [];
+                // Build queries
+                const pkExpr = `(${getPk(dstTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
+                const colNames = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
+                const selectSql = `select ${colNames.join(', ')}
+                                   from \`${tableName}\`
+                                   where `;
+                const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')})
+                                   values `
+                const deleteSql = `delete
+                                   from \`${tableName}\`
+                                   where `
+                const queryVals = [];
+                const deleteVals = [];
 
-            let srcIdx = 0;
-            let dstIdx = 0;
-            while (srcIdx < srcHashes.length || dstIdx < dstHashes.length) {
-                let srcHashRow = srcHashes[srcIdx];
-                let dstHashRow = dstHashes[dstIdx];
-                let srcHash = srcHashRow?.hash || "z";
-                let dstHash = dstHashRow?.hash || "z";
+                let srcIdx = 0;
+                let dstIdx = 0;
+                while (srcIdx < srcHashes.length || dstIdx < dstHashes.length) {
+                    let srcHashRow = srcHashes[srcIdx];
+                    let dstHashRow = dstHashes[dstIdx];
+                    // TODO: the following trick is no longer viable with arbitrary sized arrays
+                    let srcKey = srcHashRow?.pk || MAX_KEY;
+                    let dstKey = dstHashRow?.pk || MAX_KEY;
 
-                // cache values to insert or delete
-                if (srcHash > dstHash) { // ac -> abc = delete b
-                    const pkVals = getPk(dstTable).map(col => {
-                        if(srcHashRow === undefined) {
-                            console.log(`${srcHashRow} ${dstHashRow} ${srcHash} ${dstHash}`);
-                        }
-                        return srcHashRow[col.COLUMN_NAME];
-                    });
-                    deleteVals.push(pkVals);
-                    dstIdx++;
-                } else if (srcHash < dstHash) { // abc -> ac = insert b
-                    const pkVals = getPk(dstTable).map(col => srcHashRow[col.COLUMN_NAME]);
-                    queryVals.push(pkVals);
-                    srcIdx++;
-                } else { // abc -> abc = no-op
-                    srcIdx++;
-                    dstIdx++;
+                    // cache values to insert or delete
+                    const res = cmpKey(srcKey, dstKey);
+                    if (res > 0) { // ac -> abc = delete b
+                        deleteVals.push(srcHashRow.pk);
+                        dstIdx++;
+                    } else if (res < 0) { // abc -> ac = insert b
+                        queryVals.push(srcHashRow.pk);
+                        srcIdx++;
+                    } else { // abc -> abc = no-op
+                        srcIdx++;
+                        dstIdx++;
+                    }
+
+                    // execute a query batch
+                    if (deleteVals.length + queryVals.length === batchSize) {
+                        await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
+                        progress.update(page * limit + srcIdx);
+                    }
                 }
-
-                // execute a query batch
-                if (deleteVals.length + queryVals.length === batchSize) {
-                    await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
-                    progress.update(srcIdx);
-                }
+                await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
+                progress.update(page * limit + srcIdx);
             }
-            await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
             progress.stop();
             console.log(`Finished ${tableName}`)
         }
