@@ -6,7 +6,7 @@ const _ = require('lodash');
 const cliProgress = require('cli-progress');
 
 // TODO: ensure batchSize results in less than max packet size https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html#sysvar_max_allowed_packet
-const batchSize = 300; // max_allowed_packet=67108864
+const batchSize = 500; // max_allowed_packet=67108864
 const limit = 10 * batchSize;
 const queryFks = fs.readFileSync("db/queries/get_fks.sql", "utf-8");
 const queryCols = fs.readFileSync("db/queries/get_columns.sql", "utf-8");
@@ -31,7 +31,7 @@ const cmpKey = (a, b) => {
     if(a.length !== b.length) throw new Error("Invalid key!");
     for(let idx = 0; idx < a.length; idx++) {
         if(a[idx] < b[idx]) return -1;
-        if(a[idx] > b[idx]) return -1;
+        if(a[idx] > b[idx]) return 1;
     }
     return 0;
 };
