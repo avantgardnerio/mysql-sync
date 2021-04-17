@@ -196,6 +196,9 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
         let running = argv['first-table'] === undefined;
         const tableNames = _.intersection(Object.keys(srcTables), Object.keys(dstTables));
         for (const tableName of tableNames) {
+            if(tableName == "migrations") {
+                continue; // never overwrite migrations
+            }
             if(argv['skip-tables']?.includes(tableName)) {
                 continue;
             }
