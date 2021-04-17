@@ -18,6 +18,7 @@ const argv = yargs
     .option('dst-user', {description: 'Destination user', type: 'string'})
     .option('dst-pass', {description: 'Destination password', type: 'string'})
     .option('first-table', {description: 'Name of first table to sync', type: 'string'})
+    .option('skip-tables', {description: 'Name of table to skip', type: 'array'})
     .help().alias('help', 'h')
     .argv;
 
@@ -195,6 +196,9 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
         let running = argv['first-table'] === undefined;
         const tableNames = _.intersection(Object.keys(srcTables), Object.keys(dstTables));
         for (const tableName of tableNames) {
+            if(argv['skip-tables'].includes(tableName)) {
+                continue;
+            }
             if(tableName === argv['first-table']) { // for debugging
                 running = true;
             }
@@ -210,9 +214,12 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
                 console.warn(`Skipping table, type not implemented: geometry`);
                 continue;
             }
-            let lastPk;
+            let lastPk = undefined;
             for(let page = 0; ; page++) {
                 const srcHashes = await getSrcHashes(srcTable, srcCon, getPk(dstTable), lastPk);
+                if(srcHashes.length === 0) {
+                    break;
+                }
                 const min = srcHashes[0].pk;
                 const max = srcHashes[srcHashes.length - 1].pk;
                 const dstHashes = await getDstHashes(dstTable, dstCon, getPk(dstTable), min, max);
