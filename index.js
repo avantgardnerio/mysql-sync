@@ -6,7 +6,8 @@ const _ = require('lodash');
 const cliProgress = require('cli-progress');
 
 // TODO: ensure batchSize results in less than max packet size https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html#sysvar_max_allowed_packet
-const batchSize = 500; // max_allowed_packet=67108864
+const maxAllowedPacket = 50000000;
+const batchSize = 500;
 const limit = 10 * batchSize;
 const queryFks = fs.readFileSync("db/queries/get_fks.sql", "utf-8");
 const queryCols = fs.readFileSync("db/queries/get_columns.sql", "utf-8");
@@ -123,36 +124,16 @@ const selectRows = async (selectSql, queryVals, pkExpr, srcCon, dstTable) => {
         const key = keys[idx];
         const col = dstTable.cols[key];
         if(col.COLUMN_TYPE === 'date') {
-            for(let row of insertVals) {
-                const val = row[idx];
-                if(val === '0000-00-00') {
-                    row[idx] = null;
-                }
-            }
+            insertVals.filter(row => row[idx] === '0000-00-00').forEach(row => row[idx] = null);
         }
         if(col.COLUMN_TYPE === 'datetime') {
-            for(let row of insertVals) {
-                const val = row[idx];
-                if(val === '0000-00-00 00:00:00') {
-                    row[idx] = null;
-                }
-            }
+            insertVals.filter(row => row[idx] === '0000-00-00 00:00:00').forEach(row => row[idx] = null);
         }
         if(col.COLUMN_TYPE === 'timestamp') {
-            for(let row of insertVals) {
-                const val = row[idx];
-                if(val === '0000-00-00 00:00:00') {
-                    row[idx] = null;
-                }
-            }
+            insertVals.filter(row => row[idx] === '0000-00-00 00:00:00').forEach(row => row[idx] = null);
         }
         if(col.COLUMN_TYPE.startsWith('enum')) {
-            for(let row of insertVals) {
-                const val = row[idx];
-                if(val === '') {
-                    row[idx] = null;
-                }
-            }
+            insertVals.filter(row => row[idx] === '').forEach(row => row[idx] = null);
         }
     }
     queryVals.splice(0, queryVals.length);
@@ -160,9 +141,9 @@ const selectRows = async (selectSql, queryVals, pkExpr, srcCon, dstTable) => {
 };
 
 const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable) => {
+    const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon, dstTable);
     deleteVals.push(...queryVals);
     await deleteRows(dstCon, deleteSql, deleteVals, tableName, pkExpr, dstTable);
-    const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon, dstTable);
     await insertRows(dstCon, insertSql, insertVals, tableName, pkExpr);
 };
 
