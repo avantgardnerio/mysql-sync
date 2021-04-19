@@ -5,8 +5,9 @@ const yargs = require('yargs');
 const _ = require('lodash');
 const cliProgress = require('cli-progress');
 
-// TODO: ensure batchSize results in less than max packet size https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html#sysvar_max_allowed_packet
-const maxAllowedPacket = 50000000;
+// https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html#sysvar_max_allowed_packet
+const maxAllowedPacket = 67108864;
+const fudgeFactor = 2;
 const batchSize = 500;
 const limit = 10 * batchSize;
 const queryFks = fs.readFileSync("db/queries/get_fks.sql", "utf-8");
@@ -115,36 +116,77 @@ const deleteRows = async (dstCon, deleteSql, values, tableName, pkExpr) => {
 
 const selectRows = async (selectSql, queryVals, pkExpr, srcCon, dstTable) => {
     if(queryVals.length === 0) return [];
+
+    // run query
     const sql = `${selectSql} (${queryVals.map(() => pkExpr).join(' or ')})`;
     const flat = queryVals.reduce((acc, cur) => [...acc, ...cur], []);
     const srcRows = (await srcCon.awaitQuery(sql, flat));
     const insertVals = srcRows.map(row => Object.values(row));
+
+    // limit rows to maxPacketSize
+    let size = 0;
+    for(let idx = 0; idx < insertVals.length; idx++) {
+        let row = insertVals[idx];
+        size += row.reduce((acc, cur) => {
+            if(typeof cur === 'string' || cur instanceof String) {
+                return acc + cur.length;
+            } else if(typeof cur === 'number') {
+                return acc + cur.toString().length;
+            } else if(cur instanceof Buffer) {
+                return acc + cur.length;
+            } else if(cur instanceof Date) {
+                return acc + cur.toString().length;
+            } else if(cur === null) {
+                return acc + 4;
+            } else {
+                throw new Error(`Unknown type: ${typeof cur}`);
+            }
+        }, 0);
+        if(size * fudgeFactor > maxAllowedPacket) {
+            insertVals.length = idx;
+            break;
+        }
+    }
+
+    // convert MariaDB nulls to MySQL nulls
     const keys = Object.keys(dstTable.cols);
     for(let idx = 0; idx < keys.length; idx++) {
         const key = keys[idx];
         const col = dstTable.cols[key];
         if(col.COLUMN_TYPE === 'date') {
-            insertVals.filter(row => row[idx] === '0000-00-00').forEach(row => row[idx] = null);
+            insertVals.filter(row => row[idx] === '0000-00-00').forEach(row => {
+                row[idx] = null
+            });
         }
         if(col.COLUMN_TYPE === 'datetime') {
-            insertVals.filter(row => row[idx] === '0000-00-00 00:00:00').forEach(row => row[idx] = null);
+            insertVals.filter(row => row[idx] === '0000-00-00 00:00:00').forEach(row => {
+                row[idx] = null
+            });
         }
         if(col.COLUMN_TYPE === 'timestamp') {
-            insertVals.filter(row => row[idx] === '0000-00-00 00:00:00').forEach(row => row[idx] = null);
+            insertVals.filter(row => row[idx] === '0000-00-00 00:00:00').forEach(row => {
+                row[idx] = null
+            });
         }
         if(col.COLUMN_TYPE.startsWith('enum')) {
-            insertVals.filter(row => row[idx] === '').forEach(row => row[idx] = null);
+            insertVals.filter(row => row[idx] === '').forEach(row => {
+                row[idx] = null
+            });
         }
     }
-    queryVals.splice(0, queryVals.length);
+    
+    // return the values to insert
     return insertVals;
 };
 
 const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable) => {
-    const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon, dstTable);
-    deleteVals.push(...queryVals);
     await deleteRows(dstCon, deleteSql, deleteVals, tableName, pkExpr, dstTable);
-    await insertRows(dstCon, insertSql, insertVals, tableName, pkExpr);
+    while(queryVals.length > 0) {
+        const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon, dstTable);
+        deleteVals = queryVals.splice(0, insertVals.length);
+        await deleteRows(dstCon, deleteSql, deleteVals, tableName, pkExpr, dstTable);
+        await insertRows(dstCon, insertSql, insertVals, tableName, pkExpr);
+    }
 };
 
 (async () => {
