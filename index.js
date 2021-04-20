@@ -189,28 +189,27 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
     }
 };
 
+const srcConfig = {
+    "connectionLimit": 10,
+    "host": process.env.DATABASE_PARAMS_HOST,
+    "port": process.env.DATABASE_PARAMS_PORT,
+    "database": process.env.DATABASE_PARAMS_DBNAME,
+    "user": process.env.DATABASE_PARAMS_USERNAME,
+    "password": process.env.DATABASE_PARAMS_PASSWORD,
+};
+const dstConfig = {
+    "connectionLimit": 10,
+    "host": argv['dst-host'] || '127.0.0.1',
+    "port": argv['dst-port'] || '3306',
+    "database": argv['dst-db'],
+    "user": argv['dst-user'] || 'root',
+    "password": argv['dst-pass'] || '',
+};
+const srcCon = mysql.createConnection(srcConfig);
+srcCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
+const dstCon = mysql.createConnection(dstConfig);
+dstCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
 (async () => {
-    const srcConfig = {
-        "connectionLimit": 10,
-        "host": process.env.DATABASE_PARAMS_HOST,
-        "port": process.env.DATABASE_PARAMS_PORT,
-        "database": process.env.DATABASE_PARAMS_DBNAME,
-        "user": process.env.DATABASE_PARAMS_USERNAME,
-        "password": process.env.DATABASE_PARAMS_PASSWORD,
-    };
-    const dstConfig = {
-        "connectionLimit": 10,
-        "host": argv['dst-host'] || '127.0.0.1',
-        "port": argv['dst-port'] || '3306',
-        "database": argv['dst-db'],
-        "user": argv['dst-user'] || 'root',
-        "password": argv['dst-pass'] || '',
-    };
-
-    const srcCon = mysql.createConnection(srcConfig);
-    srcCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
-    const dstCon = mysql.createConnection(dstConfig);
-    dstCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
     await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=0;`);
     try {
         const srcTables = await getTables(srcCon, srcConfig.database);
@@ -306,5 +305,10 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
     await dstCon.awaitEnd();
 })().catch((ex) => {
     console.error("Error synchronizing databases!", ex);
-    process.exit(1);
+    srcCon
+        .awaitEnd()
+        .then(() => dstCon.awaitEnd())
+        .finally(() => {
+            process.exit(1);
+        });
 });
