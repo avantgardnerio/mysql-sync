@@ -305,5 +305,6 @@ const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pk
     await srcCon.awaitEnd();
     await dstCon.awaitEnd();
 })().catch((ex) => {
-    throw ex;
+    console.error("Error synchronizing databases!", ex);
+    process.exit(1);
 });
