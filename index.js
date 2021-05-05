@@ -276,7 +276,11 @@ dstCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
                     } else if (res < 0) { // abc -> ac = insert b
                         queryVals.push(srcHashRow.pk);
                         srcIdx++;
-                    } else { // abc -> abc = no-op
+                    } else { // abc -> abc = update or no-op
+                        if(srcHashRow.hash !== dstHashRow.hash) {
+                            deleteVals.push(srcHashRow.pk);
+                            queryVals.push(srcHashRow.pk);
+                        }
                         srcIdx++;
                         dstIdx++;
                     }
