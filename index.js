@@ -239,6 +239,16 @@ dstCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
                 console.warn(`Skipping table, type not implemented: geometry`);
                 continue;
             }
+
+            // Build queries
+            const srcCols = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
+            const dstCols = Object.values(dstTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
+            const colNames = _.intersection(srcCols, dstCols);
+            const pkExpr = `(${getPk(dstTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
+            const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where `;
+            const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')}) values `;
+            const deleteSql = `delete from \`${tableName}\` where `;
+
             let lastPk = undefined;
             for(let page = 0; ; page++) {
                 const srcHashes = await getSrcHashes(srcTable, srcCon, getPk(dstTable), lastPk);
@@ -249,15 +259,9 @@ dstCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
                 const max = srcHashes[srcHashes.length - 1].pk;
                 const dstHashes = await getDstHashes(dstTable, dstCon, getPk(dstTable), min, max);
 
-                // Build queries
-                const pkExpr = `(${getPk(dstTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
-                const colNames = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
-                const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where `;
-                const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')}) values `;
-                const deleteSql = `delete from \`${tableName}\` where `;
+                // sync
                 const queryVals = [];
                 const deleteVals = [];
-
                 let srcIdx = 0;
                 let dstIdx = 0;
                 while (srcIdx < srcHashes.length || dstIdx < dstHashes.length) {
