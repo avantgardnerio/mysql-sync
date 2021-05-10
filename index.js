@@ -68,9 +68,14 @@ const getSrcHashes = async (table, con, pkCols, lastPk) => {
     const md5s = Object.keys(table.cols).map(name => `md5(IFNULL(\`${name}\`, ''))`).join(', ');
     const pkNames = pkCols.map(col => `\`${col.COLUMN_NAME}\``).join(', ');
     const sql = `select ${pkNames}, md5(concat(${md5s})) as hash from \`${table.name}\` ${whereClause} order by ${pkNames} limit ${limit}`;
+    // try {
     const hashes = await con.awaitQuery(sql, params);
     const rows = hashes.map(row => row2hash(row));
     return rows;
+    // } catch (ex) {
+    //     console.error(ex);
+    //     throw ex;
+    // }
 };
 
 const getDstHashes = async (table, con, pkCols, min, max) => {
@@ -209,6 +214,7 @@ const srcCon = mysql.createConnection(srcConfig);
 srcCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
 const dstCon = mysql.createConnection(dstConfig);
 dstCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
+console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${dstConfig.port}`)
 (async () => {
     await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=0;`);
     try {
@@ -244,20 +250,24 @@ dstCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
             const srcCols = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
             const dstCols = Object.values(dstTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
             const colNames = _.intersection(srcCols, dstCols);
-            const pkExpr = `(${getPk(dstTable).map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
+            let pkCols = getPk(dstTable);
+            if(pkCols.length === 0) {
+                pkCols = getPk(srcTable);
+            }
+            const pkExpr = `(${pkCols.map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
             const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where `;
             const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')}) values `;
             const deleteSql = `delete from \`${tableName}\` where `;
 
             let lastPk = undefined;
             for(let page = 0; ; page++) {
-                const srcHashes = await getSrcHashes(srcTable, srcCon, getPk(dstTable), lastPk);
+                const srcHashes = await getSrcHashes(srcTable, srcCon, pkCols, lastPk);
                 if(srcHashes.length === 0) {
                     break;
                 }
                 const min = srcHashes[0].pk;
                 const max = srcHashes[srcHashes.length - 1].pk;
-                const dstHashes = await getDstHashes(dstTable, dstCon, getPk(dstTable), min, max);
+                const dstHashes = await getDstHashes(dstTable, dstCon, pkCols, min, max);
 
                 // sync
                 const queryVals = [];
