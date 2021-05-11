@@ -291,7 +291,7 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
                     // cache values to insert or delete
                     const res = cmpKey(srcKey, dstKey);
                     if (res > 0) { // ac -> abc = delete b
-                        deleteVals.push(srcHashRow.pk);
+                        deleteVals.push(dstHashRow.pk);
                         dstIdx++;
                     } else if (res < 0) { // abc -> ac = insert b
                         queryVals.push(srcHashRow.pk);
