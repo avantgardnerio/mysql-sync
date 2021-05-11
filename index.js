@@ -82,10 +82,15 @@ const getSrcHashes = async (table, con, pkCols, lastPk) => {
 const getDstHashes = async (table, con, pkCols, min, max) => {
     const md5s = Object.keys(table.cols).map(name => `md5(IFNULL(\`${name}\`, ''))`).join(', ');
     const pkNames = pkCols.map(col => `\`${col.COLUMN_NAME}\``).join(', ');
-    const minClause = pkCols.map(col => `\`${col.COLUMN_NAME}\` >= ?`).join(' and ');
     const maxClause = pkCols.map(col => `\`${col.COLUMN_NAME}\` <= ?`).join(' and ');
-    const sql = `select ${pkNames}, md5(concat(${md5s})) as hash from \`${table.name}\` where ${minClause} and ${maxClause} order by ${pkNames}`;
-    const params = [...min, ...max];
+    let whereClause = `where ${maxClause}`;
+    let params = [...max];
+    if(min !== undefined) {
+        const minClause = pkCols.map(col => `\`${col.COLUMN_NAME}\` > ?`).join(' and ');
+        whereClause += ` and ${minClause}`;
+        params.push(...min);
+    }
+    const sql = `select ${pkNames}, md5(concat(${md5s})) as hash from \`${table.name}\` ${whereClause} order by ${pkNames}`;
     const hashes = await con.awaitQuery(sql, params);
     const rows = hashes.map(row => row2hash(row));
     return rows;
@@ -267,9 +272,8 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
                 if(srcHashes.length === 0) {
                     break;
                 }
-                const min = srcHashes[0].pk;
                 const max = srcHashes[srcHashes.length - 1].pk;
-                const dstHashes = await getDstHashes(dstTable, dstCon, pkCols, min, max);
+                const dstHashes = await getDstHashes(dstTable, dstCon, pkCols, lastPk, max);
 
                 // sync
                 const queryVals = [];
