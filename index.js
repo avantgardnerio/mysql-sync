@@ -5,9 +5,10 @@ const yargs = require('yargs');
 const _ = require('lodash');
 const cliProgress = require('cli-progress');
 
-// https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html#sysvar_max_allowed_packet
-const maxAllowedPacket = 67108864;
-const fudgeFactor = 2;
+// https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html#sysvar_max_allowed_packet 67MB
+// https://github.com/mysqljs/mysql/issues/1698 4MB
+const maxAllowedPacket = 4 * 1024 * 1024;
+const fudgeFactor = 1;
 const batchSize = 500;
 const limit = 10 * batchSize;
 const queryFks = fs.readFileSync("db/queries/get_fks.sql", "utf-8");
@@ -214,9 +215,10 @@ const srcCon = mysql.createConnection(srcConfig);
 srcCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
 const dstCon = mysql.createConnection(dstConfig);
 dstCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
-console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${dstConfig.port}`)
+console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${dstConfig.port}`);
 (async () => {
     await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=0;`);
+    await dstCon.awaitQuery(`SET UNIQUE_CHECKS=0;`);
     try {
         const srcTables = await getTables(srcCon, srcConfig.database);
         const dstTables = await getTables(dstCon, dstConfig.database);
@@ -314,6 +316,7 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
     } finally {
         try {
             await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=1;`);
+            await dstCon.awaitQuery(`SET UNIQUE_CHECKS=1;`);
         } catch (ex) {
             console.warn("Unable to re-enable constraints. Try running it again.")
         }
