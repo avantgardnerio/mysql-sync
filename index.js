@@ -283,8 +283,8 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
                 while (srcIdx < srcHashes.length || dstIdx < dstHashes.length) {
                     let srcHashRow = srcHashes[srcIdx];
                     let dstHashRow = dstHashes[dstIdx];
-                    if(srcHashRow !== undefined) lastPk = srcHashRow.pk;
                     if(dstHashRow !== undefined) lastPk = dstHashRow.pk;
+                    if(srcHashRow !== undefined) lastPk = srcHashRow.pk;
                     let srcKey = srcHashRow?.pk || MAX_KEY;
                     let dstKey = dstHashRow?.pk || MAX_KEY;
 
