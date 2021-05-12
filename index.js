@@ -283,8 +283,6 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
                 while (srcIdx < srcHashes.length || dstIdx < dstHashes.length) {
                     let srcHashRow = srcHashes[srcIdx];
                     let dstHashRow = dstHashes[dstIdx];
-                    if(dstHashRow !== undefined) lastPk = dstHashRow.pk;
-                    if(srcHashRow !== undefined) lastPk = srcHashRow.pk;
                     let srcKey = srcHashRow?.pk || MAX_KEY;
                     let dstKey = dstHashRow?.pk || MAX_KEY;
 
@@ -293,9 +291,11 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
                     if (res > 0) { // ac -> abc = delete b
                         deleteVals.push(dstHashRow.pk);
                         dstIdx++;
+                        lastPk = dstHashRow.pk;
                     } else if (res < 0) { // abc -> ac = insert b
                         queryVals.push(srcHashRow.pk);
                         srcIdx++;
+                        lastPk = srcHashRow.pk;
                     } else { // abc -> abc = update or no-op
                         if(srcHashRow.hash !== dstHashRow.hash) {
                             deleteVals.push(srcHashRow.pk);
@@ -303,6 +303,7 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
                         }
                         srcIdx++;
                         dstIdx++;
+                        lastPk = srcHashRow.pk;
                     }
 
                     // execute a query batch
