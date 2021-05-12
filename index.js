@@ -228,6 +228,7 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
         const srcTables = await getTables(srcCon, srcConfig.database);
         const dstTables = await getTables(dstCon, dstConfig.database);
 
+        let dryRun = argv['dry-run'] !== undefined;
         let running = argv['first-table'] === undefined;
         const tableNames = _.intersection(Object.keys(srcTables), Object.keys(dstTables));
         for (const tableName of tableNames) {
@@ -289,17 +290,29 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
                     // cache values to insert or delete
                     const res = cmpKey(srcKey, dstKey);
                     if (res > 0) { // ac -> abc = delete b
-                        deleteVals.push(dstHashRow.pk);
+                        if(dryRun) {
+                            console.log(`delete from ${tableName} ${dstHashRow.pk}`);
+                        } else {
+                            deleteVals.push(dstHashRow.pk);
+                        }
                         dstIdx++;
                         lastPk = dstHashRow.pk;
                     } else if (res < 0) { // abc -> ac = insert b
-                        queryVals.push(srcHashRow.pk);
+                        if(dryRun) {
+                            console.log(`insert into ${tableName} ${srcHashRow.pk}`);
+                        } else {
+                            queryVals.push(srcHashRow.pk);
+                        }
                         srcIdx++;
                         lastPk = srcHashRow.pk;
                     } else { // abc -> abc = update or no-op
                         if(srcHashRow.hash !== dstHashRow.hash) {
-                            deleteVals.push(srcHashRow.pk);
-                            queryVals.push(srcHashRow.pk);
+                            if(dryRun) {
+                                console.log(`update ${tableName} ${srcHashRow.pk}`);
+                            } else {
+                                deleteVals.push(srcHashRow.pk);
+                                queryVals.push(srcHashRow.pk);
+                            }
                         }
                         srcIdx++;
                         dstIdx++;
@@ -308,12 +321,16 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
 
                     // execute a query batch
                     if (deleteVals.length + queryVals.length === batchSize) {
-                        await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
-                        progress.update(page * limit + srcIdx); // TODO: move out of if for faster progress updates
+                        if(!dryRun) {
+                            await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
+                            progress.update(page * limit + srcIdx); // TODO: move out of if for faster progress updates
+                        }
                     }
                 }
-                await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
-                progress.update(page * limit + srcIdx);
+                if(!dryRun) {
+                    await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
+                    progress.update(page * limit + srcIdx);
+                }
             }
             progress.stop();
             console.log(`Finished ${tableName}`)
