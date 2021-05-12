@@ -231,6 +231,7 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
         const dstTables = await getTables(dstCon, dstConfig.database);
 
         let dryRun = argv['dry-run'] !== undefined;
+        let writeKeys = argv['write-keys'] !== undefined;
         let running = argv['first-table'] === undefined;
         const tableNames = _.intersection(Object.keys(srcTables), Object.keys(dstTables));
         for (const tableName of tableNames) {
@@ -269,6 +270,7 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
             const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')}) values `;
             const deleteSql = `delete from \`${tableName}\` where `;
 
+            let keys = [];
             let lastPk = undefined;
             for(let page = 0; ; page++) {
                 const srcHashes = await getSrcHashes(srcTable, srcCon, pkCols, lastPk);
@@ -290,6 +292,10 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
                     let dstKey = dstHashRow?.pk || MAX_KEY;
 
                     // cache values to insert or delete
+                    if(writeKeys) {
+                        keys[srcKey] = true;
+                        keys[dstKey] = true;
+                    }
                     const res = cmpKey(srcKey, dstKey);
                     if (res > 0) { // ac -> abc = delete b
                         if(dryRun) {
@@ -336,6 +342,10 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
             }
             progress.stop();
             console.log(`Finished ${tableName}`)
+            if(writeKeys) {
+                let data = Object.keys(keys).join("\n");
+                fs.writeFileSync(`${tableName}.csv`, data);
+            }
         }
     } finally {
         try {
