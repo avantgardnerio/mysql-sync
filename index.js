@@ -63,6 +63,7 @@ const getSrcHashes = async (table, con, pkCols, lastPk) => {
     let whereClause = ``;
     let params = [];
     if(lastPk !== undefined) {
+        // TODO: fix compound keys: `where a > ? or (a = ? and b > ?)
         whereClause = `where ${pkCols.map(col => `\`${col.COLUMN_NAME}\` > ?`).join(' and ')}`
         params = lastPk;
     }
@@ -86,6 +87,7 @@ const getDstHashes = async (table, con, pkCols, min, max) => {
     let whereClause = `where ${maxClause}`;
     let params = [...max];
     if(min !== undefined) {
+        // TODO: fix compound keys: `where a > ? or (a = ? and b > ?)
         const minClause = pkCols.map(col => `\`${col.COLUMN_NAME}\` > ?`).join(' and ');
         whereClause += ` and ${minClause}`;
         params.push(...min);
