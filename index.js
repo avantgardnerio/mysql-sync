@@ -166,7 +166,7 @@ const selectRows = async (selectSql, queryVals, pkExpr, srcCon, dstTable) => {
     for(let idx = 0; idx < keys.length; idx++) {
         const key = keys[idx];
         const col = dstTable.cols[key];
-        if(argv['allow-empty'] === undefined) {
+        if(argv['zero-dates'] === undefined) {
             if(col.COLUMN_TYPE === 'date') {
                 insertVals.filter(row => row[idx] === '0000-00-00').forEach(row => {
                     row[idx] = null
@@ -182,11 +182,11 @@ const selectRows = async (selectSql, queryVals, pkExpr, srcCon, dstTable) => {
                     row[idx] = null
                 });
             }
-            if(col.COLUMN_TYPE.startsWith('enum')) {
-                insertVals.filter(row => row[idx] === '').forEach(row => {
-                    row[idx] = null
-                });
-            }
+        }
+        if(col.COLUMN_TYPE.startsWith('enum')) {
+            insertVals.filter(row => row[idx] === '').forEach(row => {
+                row[idx] = null
+            });
         }
     }
     
