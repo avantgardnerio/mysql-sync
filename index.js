@@ -349,17 +349,22 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
                 fs.writeFileSync(`${tableName}.csv`, data);
             }
         }
+        console.log(`Finished sync`);
     } finally {
         try {
+            console.log(`Enabling FK checks...`);
             await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=1;`);
+            console.log(`Enabling unique checks...`);
             await dstCon.awaitQuery(`SET UNIQUE_CHECKS=1;`);
         } catch (ex) {
             console.warn("Unable to re-enable constraints. Try running it again.")
         }
     }
 
+    console.log(`Closing connections...`);
     await srcCon.awaitEnd();
     await dstCon.awaitEnd();
+    console.log(`Done!`);
 })().catch((ex) => {
     console.error("Error synchronizing databases!", ex);
     srcCon
