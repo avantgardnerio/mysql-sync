@@ -122,10 +122,15 @@ async function investigate_table(table) {
 
         for(let idx = 0;idx < results_a.length;idx++) {
             Object.keys(results_a[idx]).forEach(k=>{
-                const isEqual = (results_a[idx][k] != null && results_a[idx][k].equals) ? results_a[idx][k].equals(results_b[idx][k]) :
+                let isEqual = (results_a[idx][k] != null && results_a[idx][k].equals) ? results_a[idx][k].equals(results_b[idx][k]) :
                     results_a[idx][k] === results_b[idx][k];
+                if(results_a[idx][k] && results_b[idx][k] && results_a[idx][k].getTime && results_b[idx][k].getTime) {
+                    isEqual = results_a[idx][k].getTime() === results_b[idx][k].getTime();
+                }
                 if( !isEqual) {
-                    console.log(`\t${table.name}[${mismatches[idx]}]::${k} '${results_a[idx][k]}' vs '${results_b[idx][k]}'`)
+                    var auxA = results_a[idx][k].getTime ? results_a[idx][k].getTime() : '';
+                    var auxB = results_a[idx][k].getTime ? results_a[idx][k].getTime() : '';
+                    console.log(`\t${table.name}[${mismatches[idx]}]::${k} '${results_a[idx][k]}' ${auxA} vs '${results_b[idx][k]}' ${auxB}`)
                 }
             })
         }
