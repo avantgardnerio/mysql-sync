@@ -11,8 +11,6 @@ const maxAllowedPacket = 4 * 1024 * 1024;
 const fudgeFactor = 1;
 const batchSize = 500;
 const limit = 10 * batchSize;
-const queryFks = fs.readFileSync("db/queries/get_fks.sql", "utf-8");
-const queryCols = fs.readFileSync("db/queries/get_columns.sql", "utf-8");
 
 const argv = yargs
     .option('dst-host', {description: 'Destination host', type: 'string'})
@@ -40,17 +38,10 @@ const cmpKey = (a, b) => {
     return 0;
 };
 
-const getPk = (table) => Object.values(table.cols).filter(col => col.COLUMN_KEY === 'PRI');
+const dbtools = require('./dbtools')
 
-const getTables = async (con, db) => {
-    const cols = await con.awaitQuery(queryCols, db);
-    const tables = cols.reduce((acc, cur) => {
-        acc[cur.TABLE_NAME] = acc[cur.TABLE_NAME] || {"name": cur.TABLE_NAME, "cols": {}};
-        acc[cur.TABLE_NAME].cols[cur.COLUMN_NAME] = cur;
-        return acc;
-    }, {});
-    return tables;
-};
+const getPk = dbtools.getPk;
+const getTables = dbtools.getTables;
 
 const row2hash = (row) => {
     return {
@@ -225,6 +216,7 @@ srcCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
 const dstCon = mysql.createConnection(dstConfig);
 dstCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
 console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${dstConfig.port}`);
+
 (async () => {
     await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=0;`);
     await dstCon.awaitQuery(`SET UNIQUE_CHECKS=0;`);
