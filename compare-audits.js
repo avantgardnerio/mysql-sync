@@ -130,6 +130,10 @@ async function investigate_table(table_a, table_b) {
     if(mismatches.length) {
         let pkCols = dbtools.getPk(table);
         const common_rows = intersect(table_a.cols, table_b.cols);
+
+        const extra_a = Object.keys(table_a.cols).filter(x => common_rows.indexOf(x) < 0);
+        const extra_b = Object.keys(table_b.cols).filter(x => common_rows.indexOf(x) < 0);
+
         let print_count = 50;
         let batch_size = 1000;
         let ignored = 0;
@@ -174,7 +178,18 @@ async function investigate_table(table_a, table_b) {
                 })
             }
         }
-        console.log(printf("%-48s %7d checksum row mismatches %7d ignored columns (%s)", table.name, mismatches.length, ignored, Array.from(ignored_column_set).join(", ")));
+        let ignored_msg = ""
+        if(ignored) {
+            ignored_msg = printf("%7d ignored columns (%s) ", ignored, Array.from(ignored_column_set).join(", "))
+        }
+        function schema_msg(name, extra_cols) {
+            if(extra_cols.length) {
+                return printf("%s has extra columns (%s) ", name, extra_cols.join(", "))
+            }
+            return "";
+        }
+
+        console.log(printf("%-48s %7d checksum row mismatches %s%s%s", table.name, mismatches.length, ignored_msg, schema_msg("A", extra_a), schema_msg("B", extra_b)));
     }
     return 0;
 }

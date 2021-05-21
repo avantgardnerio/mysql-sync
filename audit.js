@@ -13,8 +13,7 @@ const printf = require('fast-printf').printf
 var crc32 = require('fast-crc32c');
 
 const argv = yargs
-    .option('first-table', {description: 'Name of first table to sync', type: 'string'})
-    .option('skip-tables', {description: 'Name of table to skip', type: 'array'})
+    .option('limit', {description: 'Limit number of rows per query', type: 'int', default: null})
     .help().alias('help', 'h')
     .argv;
 
@@ -24,10 +23,27 @@ srcCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
 
 async function checksum_field(col, checksum = "crc32") {
     let arg = `\`${await col.COLUMN_NAME}\``;
+
+    const stringify_types = [
+        'bigint',
+        'int',
+        'mediumint',
+        'smallint',
+        'tinyint',
+        'float',
+        'double',
+        'real'
+    ]
+
     if(col.IS_NULLABLE !== "NO") {
         // Effectively give null a unique constant value (Doesn't look like 0 or empty string)
         arg = `IFNULL(${arg}, '@9mT&$5CLZ!pd2Q$hxTG46Y')`;
     }
+
+    if(stringify_types.indexOf(col.DATA_TYPE.toLowerCase()) >= 0) {
+        arg = `CONVERT(${arg}, char)`;
+    }
+
     return `${checksum}(${arg})`
 }
 
@@ -148,8 +164,10 @@ console.log(`Auditing ${srcCon.config.host}:${srcCon.config.port}`);
 
 (async () =>
 {
-    let limit = null;
-
+    let limit = argv['limit'];
+    if(limit !== null) {
+        console.log(`NOTE: Limiting queries to ${limit}`)
+    }
     var start = new Date()
     const results = await checksum_db(srcCon, limit,'crc32')
     const time = new Date() - start;
