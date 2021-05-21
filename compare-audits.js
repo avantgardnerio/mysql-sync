@@ -1,4 +1,6 @@
 const dotenv = require('dotenv')
+dotenv.config()
+
 const fs = require('fs');
 const mysql = require(`mysql-await`);
 const yargs = require('yargs');
@@ -15,6 +17,7 @@ const printf = require('fast-printf').printf
 var crc32 = require('fast-crc32c');
 
 const argv = yargs
+    .option('process-tables',  {description: 'list of tables to process', type: 'array'})
     .option('ignore-null-vs-empty', {description: 'ignore null vs empty', type: 'bool'})
     .option('ignore-null-vs-zero-date', {description: 'ignore null vs zero date', type: 'bool'})
     .help().alias('help', 'h')
@@ -59,6 +62,8 @@ function loadRowInfo(conn, table) {
 */
     return rl;
 }
+
+let queries = fs.createWriteStream(`./${dbtools.dbDir(env_a, argv['suffix'])}/compare_queries.csv`);
 
 async function investigate_table(table_a, table_b) {
     const table = table_a;
@@ -106,7 +111,7 @@ async function investigate_table(table_a, table_b) {
             lineA = await extract(itA, lineA);
         } else if (lineA.id === lineB.id) {
             if(lineA.checksum !== lineB.checksum) {
-                mismatches.push(lineA.id);
+                mismatches.push({id: lineA.id, checksum_a: lineA.checksum, checksum_b: lineB.checksum});
             }
             lineB = await extract(itB, lineB);
             lineA = await extract(itA, lineA);
@@ -137,21 +142,54 @@ async function investigate_table(table_a, table_b) {
         let print_count = 50;
         let batch_size = 1000;
         let ignored = 0;
+        let floatIssues = 0;
         const ignored_column_set = new Set();
 
+        const column_set = [
+            ...common_rows,
+            ...await dbtools.checksum_fields(table.cols, '_calc', ''),
+            ...await dbtools.checksum_fields(table.cols, '_hash'),
+            `md5(concat(${await dbtools.checksum_fields(table.cols)})) as full_table_hash`
+        ]
+
+        queries.write(`select ${column_set.join((", "))} from ${table.name}\n\n`)
         for(let offset = 0;offset < mismatches.length && print_count;offset += batch_size) {
-            const q = `select ${common_rows.join((", "))} from ${table.name} where ${pkCols[0].COLUMN_NAME} in (${mismatches.slice(offset, offset + batch_size)});`
+            const q = `select ${column_set.join((", "))} from ${table.name} where ${pkCols[0].COLUMN_NAME} in (${mismatches.slice(offset, offset + batch_size).map(x => x.id).join(',')});`
             const results_a = await env_a.awaitQuery(q);
             const results_b = await env_b.awaitQuery(q);
 
             for (let idx = 0; idx < results_a.length && print_count; idx++) {
+                const unequalSet = new Set();
+                let foundIssue = false;
                 Object.keys(results_a[idx]).forEach(k => {
-                    let isEqual = (results_a[idx][k] != null && results_a[idx][k].equals) ? results_a[idx][k].equals(results_b[idx][k]) :
-                        results_a[idx][k] === results_b[idx][k];
-                    if (results_a[idx][k] && results_b[idx][k] && results_a[idx][k].getTime && results_b[idx][k].getTime) {
-                        isEqual = results_a[idx][k].getTime() === results_b[idx][k].getTime();
+                    if(unequalSet.has(k))
+                        return;
+
+                    const value_a = results_a[idx][k];
+                    const value_b = results_b[idx][k];
+
+                    let isEqual = (value_a != null && value_a.equals) ? value_a.equals(value_b) :
+                        value_a === value_b;
+                    if (value_a && value_b && value_a.getTime && value_b.getTime) {
+                        isEqual = value_a.getTime() === value_b.getTime();
                     }
 
+                    var float_regexp = /^-?\d+\.?\d*$/;
+
+                    if(!isEqual) {
+                        foundIssue = true;
+                        if(k.endsWith('_calc') && float_regexp.test(value_a) && float_regexp.test(value_b)) {
+                            const flt_a = parseFloat(value_a), flt_b = parseFloat(value_b);
+                            const diff = Math.abs(flt_a - flt_b);
+                            isEqual = diff < Math.abs(flt_a + flt_b) * .001;
+                            //console.log(flt_a, flt_b, isEqual, diff, Math.abs(flt_a + flt_b) * .001)
+                            floatIssues += isEqual;
+                        }
+                        const key = k.replace("_hash", "").replace("_calc", "");
+                        unequalSet.add(`${key}_hash`)
+                        unequalSet.add(`${key}_calc`)
+                        unequalSet.add(`full_table_hash`)
+                    }
 
                     let valid_againt_nulls = [];
                     if(argv['ignore-null-vs-empty']) valid_againt_nulls.push('')
@@ -159,23 +197,28 @@ async function investigate_table(table_a, table_b) {
 
                     for(var v of valid_againt_nulls) {
                         if(!isEqual) {
-                            isEqual = (results_a[idx][k] === null && results_b[idx][k] === v) ||
-                                (results_b[idx][k] === null && results_a[idx][k] === v);
+                            isEqual = (value_a === null && value_b === v) ||
+                                (value_b === null && value_a === v);
                             if(isEqual) { ignored += 1; ignored_column_set.add(k) }
                         }
                     }
                     if(!isEqual && argv['ignore-null-vs-zero-date']) {
-                        isEqual = (results_a[idx][k] === null && results_b[idx][k].getTime && results_b[idx][k].getTime() === 0) ||
-                            (results_b[idx][k] === null && results_a[idx][k].getTime && results_a[idx][k].getTime() === 0);
+                        isEqual = (value_a === null && value_b.getTime && value_b.getTime() === 0) ||
+                            (value_b === null && value_a.getTime && value_a.getTime() === 0);
                         if(isEqual) { ignored += 1; ignored_column_set.add(k) }
                     }
+
                     if (!isEqual) {
-                        var auxA = results_a[idx][k].getTime ? results_a[idx][k].getTime() : '';
-                        var auxB = results_a[idx][k].getTime ? results_a[idx][k].getTime() : '';
-                        console.log(`\t${table.name}[${mismatches[idx]}]::${k} '${results_a[idx][k]}' vs '${results_b[idx][k]}'`)
+                        var auxA = value_a.getTime ? value_a.getTime() : '';
+                        var auxB = value_a.getTime ? value_a.getTime() : '';
+                        console.log(`\t${table.name}[${mismatches[idx].id}]::${k} '${value_a}' vs '${value_b}'`)
                         print_count--;
                     }
                 })
+
+                if(!foundIssue) {
+                    console.log(`Could not find the issue with ${table.name} ${JSON.stringify(mismatches[idx])} ${results_a[idx]['full_table_hash']} ${results_b[idx]['full_table_hash']}!`)
+                }
             }
         }
         let ignored_msg = ""
@@ -188,8 +231,8 @@ async function investigate_table(table_a, table_b) {
             }
             return "";
         }
-
-        console.log(printf("%-48s %7d checksum row mismatches %s%s%s", table.name, mismatches.length, ignored_msg, schema_msg("A", extra_a), schema_msg("B", extra_b)));
+        let float_msg = floatIssues ? printf('5%d float issues', floatIssues) : '';
+        console.log(printf("%-48s %7d checksum row mismatches %s%s%s%s", table.name, mismatches.length, ignored_msg, schema_msg("A", extra_a), schema_msg("B", extra_b)), float_msg);
     }
     return 0;
 }
@@ -198,7 +241,23 @@ async function investigate_table(table_a, table_b) {
 {
     var tables_a = await parseTableFile(`${dbtools.dbDir(env_a)}/tables.csv`)
     var tables_b = await parseTableFile(`${dbtools.dbDir(env_b)}/tables.csv`);
-    var common_tables = intersect(tables_a, tables_b);
+    let common_tables = new Set(intersect(tables_a, tables_b));
+
+    if(argv['process-tables']) {
+        common_tables = new Set(argv['process-tables']);
+        console.log(`Only running tables ${Array.from(common_tables)}`)
+    } else {
+        var skip_tables = process.env.SKIP_TABLES;
+        if (skip_tables) {
+            for (const t of skip_tables.split(",")) {
+                if (common_tables.has(t)) {
+                    console.log(`Not checking ${t}; on skip list`)
+                    common_tables.delete(t);
+                }
+            }
+        }
+    }
+
     const table_defs_a = await dbtools.getTables(env_a);
     const table_defs_b = await dbtools.getTables(env_b);
 
@@ -212,8 +271,10 @@ async function investigate_table(table_a, table_b) {
 
     await env_a.awaitEnd();
     await env_b.awaitEnd();
+    await queries.end();
 })().catch(async (ex) => {
     await env_a.awaitEnd();
     await env_b.awaitEnd();
+    await queries.end();
     throw ex;
 });
