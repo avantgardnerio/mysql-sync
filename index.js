@@ -89,6 +89,7 @@ const deleteRows = async (dstCon, deleteSql, values, tableName, pkExpr) => {
 
 const selectRows = async (selectSql, queryVals, pkExpr, srcCon, dstTable) => {
     if(queryVals.length === 0) return [];
+    queryVals = queryVals.slice(0, 500); // MySQL freaks out with large queries
 
     // run query
     const sql = `${selectSql} (${queryVals.map(() => pkExpr).join(' or ')})`;
