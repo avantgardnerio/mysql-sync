@@ -42,6 +42,106 @@ const getTables = async (con, db) => {
     return tables;
 };
 
+const insertRows = async (dstCon, insertSql, values, tableName, pkExpr) => {
+    if(values.length === 0) return;
+    const sql = `${insertSql} ${values.map(row => `(${row.map(() => `?`).join(', ')})`).join(', ')}`;
+    const flat = values.reduce((acc, cur) => [...acc, ...cur], []);
+    // try {
+    const res = await dstCon.awaitQuery(sql, flat);
+    if (res.affectedRows !== values.length) {
+        console.warn(`Problem inserting into ${tableName} ${pkExpr} affected ${res.affectedRows} rows ${res.message}`);
+    }
+    // } catch (ex) {
+    //     throw ex;
+    // }
+    values.splice(0, values.length);
+}
+
+const deleteRows = async (dstCon, deleteSql, values, tableName, pkExpr) => {
+    if(values.length === 0) return;
+    const sql = `${deleteSql} (${values.map(() => pkExpr).join(' or ')})`;
+    const flat = values.reduce((acc, cur) => [...acc, ...cur], []);
+    const res = await dstCon.awaitQuery(sql, flat);
+    values.splice(0, values.length);
+};
+
+const selectRows = async (selectSql, queryVals, pkExpr, srcCon, dstTable) => {
+    if(queryVals.length === 0) return [];
+
+    // run query
+    const sql = `${selectSql} (${queryVals.map(() => pkExpr).join(' or ')})`;
+    const flat = queryVals.reduce((acc, cur) => [...acc, ...cur], []);
+    const srcRows = (await srcCon.awaitQuery(sql, flat));
+    const insertVals = srcRows.map(row => Object.values(row));
+
+    // limit rows to maxPacketSize
+    let size = 0;
+    for(let idx = 0; idx < insertVals.length; idx++) {
+        let row = insertVals[idx];
+        size += row.reduce((acc, cur) => {
+            if(typeof cur === 'string' || cur instanceof String) {
+                return acc + cur.length;
+            } else if(typeof cur === 'number') {
+                return acc + cur.toString().length;
+            } else if(cur instanceof Buffer) {
+                return acc + cur.length;
+            } else if(cur instanceof Date) {
+                return acc + cur.toString().length;
+            } else if(cur === null) {
+                return acc + 4;
+            } else {
+                throw new Error(`Unknown type: ${typeof cur}`);
+            }
+        }, 0);
+        if(size * fudgeFactor > maxAllowedPacket) {
+            insertVals.length = idx;
+            break;
+        }
+    }
+
+    // convert MariaDB nulls to MySQL nulls
+    const keys = Object.keys(dstTable.cols);
+    for(let idx = 0; idx < keys.length; idx++) {
+        const key = keys[idx];
+        const col = dstTable.cols[key];
+        if(argv['zero-dates'] === undefined) {
+            if(col.COLUMN_TYPE === 'date') {
+                insertVals.filter(row => row[idx] === '0000-00-00').forEach(row => {
+                    row[idx] = null
+                });
+            }
+            if(col.COLUMN_TYPE === 'datetime') {
+                insertVals.filter(row => row[idx] === '0000-00-00 00:00:00').forEach(row => {
+                    row[idx] = null
+                });
+            }
+            if(col.COLUMN_TYPE === 'timestamp') {
+                insertVals.filter(row => row[idx] === '0000-00-00 00:00:00').forEach(row => {
+                    row[idx] = null
+                });
+            }
+        }
+        if(col.COLUMN_TYPE.startsWith('enum')) {
+            insertVals.filter(row => row[idx] === '').forEach(row => {
+                row[idx] = null
+            });
+        }
+    }
+
+    // return the values to insert
+    return insertVals;
+};
+
+const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable) => {
+    await deleteRows(dstCon, deleteSql, deleteVals, tableName, pkExpr, dstTable);
+    while(queryVals.length > 0) {
+        const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon, dstTable);
+        deleteVals = queryVals.splice(0, insertVals.length);
+        await deleteRows(dstCon, deleteSql, deleteVals, tableName, pkExpr, dstTable);
+        await insertRows(dstCon, insertSql, insertVals, tableName, pkExpr);
+    }
+};
+
 const srcConfig = {
     "connectionLimit": 10,
     "host": process.env.DATABASE_PARAMS_HOST,
@@ -83,11 +183,19 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
             pkCols = getPk(srcTable);
         }
         const pkExpr = `(${pkCols.map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
-        const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where ${pkExpr}`;
+        const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where `;
+        const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')}) values `;
+        const deleteSql = `delete from \`${tableName}\` where `;
         const pkVals = argv['pk'];
-        const seedRow = (await srcCon.awaitQuery(selectSql, pkVals))[0];
+
+        const queryVals = [];
+        const deleteVals = [];
+
+        deleteVals.push(pkVals);
+        queryVals.push(pkVals);
 
         console.log('Syncing...')
+        await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
     } finally {
         try {
             console.log(`Enabling FK checks...`);
