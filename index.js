@@ -29,9 +29,11 @@ const getRels = async (con, db) => {
     const fks = await con.awaitQuery(queryFks, db);
     const rels = fks.reduce((acc, cur) => {
         let obj = acc[cur.CONSTRAINT_NAME] || {name: cur.CONSTRAINT_NAME, cols: []};
+        obj.parent = cur.REFERENCED_TABLE_NAME;
+        obj.child = cur.TABLE_NAME;
         obj.cols[cur.ORDINAL_POSITION - 1] = {
-            parent: {table: cur.REFERENCED_TABLE_NAME, col: cur.REFERENCED_COLUMN_NAME},
-            child: {table: cur.TABLE_NAME, col: cur.COLUMN_NAME},
+            parent: cur.REFERENCED_COLUMN_NAME,
+            child: cur.COLUMN_NAME,
         };
         acc[cur.CONSTRAINT_NAME] = obj;
         return acc;
@@ -178,7 +180,7 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
     try {
         const srcTables = await getTables(srcCon, srcConfig.database);
         const dstTables = await getTables(dstCon, dstConfig.database);
-        const parent2child = await getRels(dstCon, dstConfig.database);
+        const rels = await getRels(dstCon, dstConfig.database);
 
         const tableName = argv['seed-table'];
         const srcTable = srcTables[tableName];
