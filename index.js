@@ -221,6 +221,9 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
 
         console.log('Syncing...')
         await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
+
+        const children = parent2child[tableName];
+        console.log(`Syncing ${children.length} child tables of ${tableName}`);
     } finally {
         try {
             console.log(`Enabling FK checks...`);
