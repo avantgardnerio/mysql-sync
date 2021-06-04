@@ -25,6 +25,23 @@ const argv = yargs
     .help().alias('help', 'h')
     .argv;
 
+const getRels = async (con, db) => {
+    const fks = await con.awaitQuery(queryFks, db);
+    return fks;
+};
+
+const getPk = (table) => Object.values(table.cols).filter(col => col.COLUMN_KEY === 'PRI');
+
+const getTables = async (con, db) => {
+    const cols = await con.awaitQuery(queryCols, db);
+    const tables = cols.reduce((acc, cur) => {
+        acc[cur.TABLE_NAME] = acc[cur.TABLE_NAME] || {"name": cur.TABLE_NAME, "cols": {}};
+        acc[cur.TABLE_NAME].cols[cur.COLUMN_NAME] = cur;
+        return acc;
+    }, {});
+    return tables;
+};
+
 const srcConfig = {
     "connectionLimit": 10,
     "host": process.env.DATABASE_PARAMS_HOST,
@@ -50,6 +67,26 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
     await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=0;`);
     await dstCon.awaitQuery(`SET UNIQUE_CHECKS=0;`);
     try {
+        const srcTables = await getTables(srcCon, srcConfig.database);
+        const dstTables = await getTables(dstCon, dstConfig.database);
+
+        const tableName = argv['seed-table'];
+        const srcTable = srcTables[tableName];
+        const dstTable = dstTables[tableName];
+
+        // Build queries
+        const srcCols = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
+        const dstCols = Object.values(dstTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
+        const colNames = _.intersection(srcCols, dstCols);
+        let pkCols = getPk(dstTable);
+        if(pkCols.length === 0) {
+            pkCols = getPk(srcTable);
+        }
+        const pkExpr = `(${pkCols.map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
+        const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where ${pkExpr}`;
+        const pkVals = argv['pk'];
+        const seedRow = (await srcCon.awaitQuery(selectSql, pkVals))[0];
+
         console.log('Syncing...')
     } finally {
         try {
