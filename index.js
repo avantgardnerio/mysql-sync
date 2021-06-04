@@ -185,6 +185,28 @@ srcCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
 const dstCon = mysql.createConnection(dstConfig);
 dstCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
 console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${dstConfig.port}`);
+
+const syncRows = async (srcTables, tableName, dstTables, queryVals) => {
+    const srcTable = srcTables[tableName];
+    const dstTable = dstTables[tableName];
+
+    // Build queries
+    const srcCols = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
+    const dstCols = Object.values(dstTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
+    const colNames = _.intersection(srcCols, dstCols);
+    let pkCols = getPk(dstTable);
+    if (pkCols.length === 0) {
+        pkCols = getPk(srcTable);
+    }
+    const pkExpr = `(${pkCols.map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
+    const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where `;
+    const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')}) values `;
+    const deleteSql = `delete from \`${tableName}\` where `;
+
+    const deleteVals = [];
+    await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
+}
+
 (async () => {
     await dstCon.awaitQuery(`SET FOREIGN_KEY_CHECKS=0;`);
     await dstCon.awaitQuery(`SET UNIQUE_CHECKS=0;`);
@@ -196,34 +218,33 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
         const child2parent = indexRels(rels, 'child');
 
         const tableName = argv['seed-table'];
-        const srcTable = srcTables[tableName];
-        const dstTable = dstTables[tableName];
-
-        // Build queries
-        const srcCols = Object.values(srcTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
-        const dstCols = Object.values(dstTable.cols).map(col => `\`${col.COLUMN_NAME}\``);
-        const colNames = _.intersection(srcCols, dstCols);
-        let pkCols = getPk(dstTable);
-        if(pkCols.length === 0) {
-            pkCols = getPk(srcTable);
-        }
-        const pkExpr = `(${pkCols.map(col => `\`${col.COLUMN_NAME}\`=?`).join(' and ')})`;
-        const selectSql = `select ${colNames.join(', ')} from \`${tableName}\` where `;
-        const insertSql = `insert into \`${tableName}\` (${colNames.join(', ')}) values `;
-        const deleteSql = `delete from \`${tableName}\` where `;
         const pkVals = argv['pk'];
-
         const queryVals = [];
-        const deleteVals = [];
-
-        deleteVals.push(pkVals);
         queryVals.push(pkVals);
-
-        console.log('Syncing...')
-        await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
+        await syncRows(srcTables, tableName, dstTables, queryVals);
 
         const children = parent2child[tableName];
         console.log(`Syncing ${children.length} child tables of ${tableName}`);
+        for(let child of children) {
+            const parentVals = [];
+            parentVals.push(pkVals);
+
+            const tableName = child.child;
+            const fkCols = child.cols.map(col => col.child);
+            const fkExpr = `(${fkCols.map(col => `\`${col}\`=?`).join(' and ')})`;
+            const dstTable = dstTables[tableName];
+            let pkCols = getPk(dstTable);
+            if (pkCols.length === 0) {
+                pkCols = getPk(srcTable);
+            }
+            const pkNames = pkCols.map(it => it.COLUMN_NAME);
+            const selectSql = `select ${pkNames.join(', ')} from \`${tableName}\` where ${fkExpr}`;
+            const flat = parentVals.reduce((acc, cur) => [...acc, ...cur], []);
+            const childPkRows = (await srcCon.awaitQuery(selectSql, flat));
+            const childVals = childPkRows.map(row => Object.values(row));
+
+            await syncRows(srcTables, tableName, dstTables, childVals);
+        }
     } finally {
         try {
             console.log(`Enabling FK checks...`);
