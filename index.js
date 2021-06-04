@@ -158,6 +158,7 @@ const selectRows = async (selectSql, queryVals, pkExpr, srcCon, dstTable) => {
 const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable) => {
     await deleteRows(dstCon, deleteSql, deleteVals, tableName, pkExpr, dstTable);
     while(queryVals.length > 0) {
+        console.log(`${queryVals.length} remaining...`);
         const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon, dstTable);
         deleteVals = queryVals.splice(0, insertVals.length);
         await deleteRows(dstCon, deleteSql, deleteVals, tableName, pkExpr, dstTable);
@@ -187,10 +188,12 @@ const dstCon = mysql.createConnection(dstConfig);
 dstCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
 console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${dstConfig.port}`);
 
-const syncRows = async (srcTables, tableName, dstTables, queryVals, parent2child) => {
+const syncRows = async (srcTables, tableName, dstTables, queryVals, parent2child, path = []) => {
     if(queryVals.length === 0) {
         return;
     }
+    path = [...path, tableName];
+    console.log(`Syncing ${path.join('->')}...`)
     const srcTable = srcTables[tableName];
     const dstTable = dstTables[tableName];
 
@@ -213,7 +216,6 @@ const syncRows = async (srcTables, tableName, dstTables, queryVals, parent2child
 
     // recurse into children
     const children = parent2child[tableName] || [];
-    console.log(`Syncing ${children.length} child tables of ${tableName}`);
     for(let child of children) {
         const tableName = child.child;
         const fkCols = child.cols.map(col => col.child);
@@ -229,7 +231,7 @@ const syncRows = async (srcTables, tableName, dstTables, queryVals, parent2child
         const childPkRows = (await srcCon.awaitQuery(selectSql, flat));
         const childVals = childPkRows.map(row => Object.values(row));
 
-        await syncRows(srcTables, tableName, dstTables, childVals, parent2child);
+        await syncRows(srcTables, tableName, dstTables, childVals, parent2child, path);
     }
 }
 
