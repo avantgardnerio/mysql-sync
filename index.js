@@ -186,7 +186,10 @@ const dstCon = mysql.createConnection(dstConfig);
 dstCon.on(`error`, (err) => console.error(`Connection error ${err.code}`));
 console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${dstConfig.port}`);
 
-const syncRows = async (srcTables, tableName, dstTables, queryVals) => {
+const syncRows = async (srcTables, tableName, dstTables, queryVals, parent2child) => {
+    if(queryVals.length === 0) {
+        return;
+    }
     const srcTable = srcTables[tableName];
     const dstTable = dstTables[tableName];
 
@@ -204,7 +207,29 @@ const syncRows = async (srcTables, tableName, dstTables, queryVals) => {
     const deleteSql = `delete from \`${tableName}\` where `;
 
     const deleteVals = [];
+    const parentVals = [...queryVals];
     await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
+
+    // recurse into children
+    const children = parent2child[tableName] || [];
+    console.log(`Syncing ${children.length} child tables of ${tableName}`);
+    for(let child of children) {
+        const tableName = child.child;
+        const fkCols = child.cols.map(col => col.child);
+        const fkExpr = `(${fkCols.map(col => `\`${col}\`=?`).join(' and ')})`;
+        const dstTable = dstTables[tableName];
+        let pkCols = getPk(dstTable);
+        if (pkCols.length === 0) {
+            pkCols = getPk(srcTable);
+        }
+        const pkNames = pkCols.map(it => it.COLUMN_NAME);
+        const selectSql = `select ${pkNames.join(', ')} from \`${tableName}\` where ${fkExpr}`;
+        const flat = parentVals.reduce((acc, cur) => [...acc, ...cur], []);
+        const childPkRows = (await srcCon.awaitQuery(selectSql, flat));
+        const childVals = childPkRows.map(row => Object.values(row));
+
+        await syncRows(srcTables, tableName, dstTables, childVals, parent2child);
+    }
 }
 
 (async () => {
@@ -221,30 +246,7 @@ const syncRows = async (srcTables, tableName, dstTables, queryVals) => {
         const pkVals = argv['pk'];
         const queryVals = [];
         queryVals.push(pkVals);
-        await syncRows(srcTables, tableName, dstTables, queryVals);
-
-        const children = parent2child[tableName];
-        console.log(`Syncing ${children.length} child tables of ${tableName}`);
-        for(let child of children) {
-            const parentVals = [];
-            parentVals.push(pkVals);
-
-            const tableName = child.child;
-            const fkCols = child.cols.map(col => col.child);
-            const fkExpr = `(${fkCols.map(col => `\`${col}\`=?`).join(' and ')})`;
-            const dstTable = dstTables[tableName];
-            let pkCols = getPk(dstTable);
-            if (pkCols.length === 0) {
-                pkCols = getPk(srcTable);
-            }
-            const pkNames = pkCols.map(it => it.COLUMN_NAME);
-            const selectSql = `select ${pkNames.join(', ')} from \`${tableName}\` where ${fkExpr}`;
-            const flat = parentVals.reduce((acc, cur) => [...acc, ...cur], []);
-            const childPkRows = (await srcCon.awaitQuery(selectSql, flat));
-            const childVals = childPkRows.map(row => Object.values(row));
-
-            await syncRows(srcTables, tableName, dstTables, childVals);
-        }
+        await syncRows(srcTables, tableName, dstTables, queryVals, parent2child);
     } finally {
         try {
             console.log(`Enabling FK checks...`);
