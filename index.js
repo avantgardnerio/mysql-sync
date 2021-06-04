@@ -41,6 +41,17 @@ const getRels = async (con, db) => {
     return rels;
 };
 
+const indexRels = (rels, fieldName) => {
+    const idx = Object.keys(rels).reduce((acc, cur) => {
+        const rel = rels[cur];
+        const key = rel[fieldName];
+        acc[key] = acc[key] || [];
+        acc[key].push(rel);
+        return acc;
+    }, {});
+    return idx;
+};
+
 const getPk = (table) => Object.values(table.cols).filter(col => col.COLUMN_KEY === 'PRI');
 
 const getTables = async (con, db) => {
@@ -181,6 +192,8 @@ console.log(`Syncing ${srcConfig.host}:${srcConfig.port} -> ${dstConfig.host}:${
         const srcTables = await getTables(srcCon, srcConfig.database);
         const dstTables = await getTables(dstCon, dstConfig.database);
         const rels = await getRels(dstCon, dstConfig.database);
+        const parent2child = indexRels(rels, 'parent');
+        const child2parent = indexRels(rels, 'child');
 
         const tableName = argv['seed-table'];
         const srcTable = srcTables[tableName];
