@@ -241,7 +241,9 @@ const syncRows = async (srcTables, tableName, dstTables, queryVals, parent2child
     try {
         const srcTables = await getTables(srcCon, srcConfig.database);
         const dstTables = await getTables(dstCon, dstConfig.database);
-        const rels = await getRels(dstCon, dstConfig.database);
+        const db_rels = await getRels(dstCon, dstConfig.database);
+        const logical_rels = JSON.parse(fs.readFileSync('logical_rels.json', 'utf-8'));
+        const rels = {...logical_rels, ...db_rels};
         const parent2child = indexRels(rels, 'parent');
         const child2parent = indexRels(rels, 'child');
 
