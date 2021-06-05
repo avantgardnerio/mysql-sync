@@ -227,6 +227,7 @@ const syncRows = async (srcTables, tableName, dstTables, queryVals, parent2child
         }
         const pkNames = pkCols.map(it => it.COLUMN_NAME);
         const selectSql = `select ${pkNames.join(', ')} from \`${tableName}\` where ${fkExpr}`;
+        // TODO: lookup parent by PK from parentVals, then grab the actual column value for this relationship e.g. vuc_email not vuc_id
         const flat = parentVals.reduce((acc, cur) => [...acc, ...cur], []);
         const childPkRows = (await srcCon.awaitQuery(selectSql, flat));
         const childVals = childPkRows.map(row => Object.values(row));
