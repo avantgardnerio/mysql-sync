@@ -156,14 +156,17 @@ const selectRows = async (selectSql, queryVals, pkExpr, srcCon, dstTable) => {
 };
 
 const syncBatch = async (deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable) => {
+    const retVals = [];
     await deleteRows(dstCon, deleteSql, deleteVals, tableName, pkExpr, dstTable);
     while(queryVals.length > 0) {
         console.log(`${queryVals.length} remaining...`);
         const insertVals = await selectRows(selectSql, queryVals, pkExpr, srcCon, dstTable);
+        retVals.push(...insertVals);
         deleteVals = queryVals.splice(0, insertVals.length);
         await deleteRows(dstCon, deleteSql, deleteVals, tableName, pkExpr, dstTable);
         await insertRows(dstCon, insertSql, insertVals, tableName, pkExpr);
     }
+    return retVals;
 };
 
 const srcConfig = {
@@ -211,8 +214,7 @@ const syncRows = async (srcTables, tableName, dstTables, queryVals, parent2child
     const deleteSql = `delete from \`${tableName}\` where `;
 
     const deleteVals = [];
-    const parentVals = [...queryVals];
-    await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
+    const retVals = await syncBatch(deleteVals, queryVals, dstCon, deleteSql, tableName, pkExpr, selectSql, srcCon, insertSql, dstTable);
 
     // recurse into children
     const children = parent2child[tableName] || [];
@@ -227,8 +229,12 @@ const syncRows = async (srcTables, tableName, dstTables, queryVals, parent2child
         }
         const pkNames = pkCols.map(it => it.COLUMN_NAME);
         const selectSql = `select ${pkNames.join(', ')} from \`${tableName}\` where ${fkExpr}`;
-        // TODO: lookup parent by PK from parentVals, then grab the actual column value for this relationship e.g. vuc_email not vuc_id
+
+        // Get parent FK values
+        const indices = child.cols.map(col => colNames.indexOf(`\`${col.parent}\``));
+        const parentVals = retVals.map(vals => indices.map(idx => vals[idx]));
         const flat = parentVals.reduce((acc, cur) => [...acc, ...cur], []);
+        
         const childPkRows = (await srcCon.awaitQuery(selectSql, flat));
         const childVals = childPkRows.map(row => Object.values(row));
 
