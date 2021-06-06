@@ -1,4 +1,5 @@
 require('dotenv').config()
+const jq = require('node-jq')
 const fs = require('fs');
 const mysql = require(`mysql-await`);
 const yargs = require('yargs');
@@ -231,8 +232,29 @@ const syncRows = async (srcTables, tableName, dstTables, queryVals, parent2child
         const selectSql = `select ${pkNames.join(', ')} from \`${tableName}\` where `;
 
         // Get parent FK values
-        const indices = child.cols.map(col => colNames.indexOf(`\`${col.parent}\``));
-        const parentVals = retVals.map(vals => indices.map(idx => vals[idx]));
+        let query = undefined;
+        const indices = child.cols.map(col => {
+            let name = col.parent;
+            if(child.type === 'php-jq') {
+                name = name.split('.')[0];
+                query = col.parent.substring(col.parent.indexOf('.'));
+            }
+            return colNames.indexOf(`\`${name}\``);
+        });
+        let parentVals = retVals.map(vals => indices.map(idx => vals[idx]));
+        if(child.type === 'php-jq') {
+            let newVals = [];
+            for(let val of parentVals) {
+                let startIdx = val[0].indexOf('"');
+                val[0] = val[0].substring(startIdx + 1);
+                let endIdx = val[0].lastIndexOf('"');
+                val[0] = val[0].substring(0, endIdx);
+
+                let tmpVals = (await jq.run(query, val[0], { input: 'string' })).split('\n').map(it => [parseInt(JSON.parse(it))]);
+                newVals.push(...tmpVals);
+            }
+            parentVals = newVals;
+        }
 
         const childVals = [];
         while(parentVals.length > 0) {
