@@ -228,18 +228,26 @@ const syncRows = async (srcTables, tableName, dstTables, queryVals, parent2child
             pkCols = getPk(srcTable);
         }
         const pkNames = pkCols.map(it => it.COLUMN_NAME);
-        const selectSql = `select ${pkNames.join(', ')} from \`${tableName}\` where ${fkExpr}`;
+        const selectSql = `select ${pkNames.join(', ')} from \`${tableName}\` where `;
 
         // Get parent FK values
         const indices = child.cols.map(col => colNames.indexOf(`\`${col.parent}\``));
         const parentVals = retVals.map(vals => indices.map(idx => vals[idx]));
-        const flat = parentVals.reduce((acc, cur) => {
-            acc.push(...cur);
-            return acc;
-        }, []);
-        
-        const childPkRows = (await srcCon.awaitQuery(selectSql, flat));
-        const childVals = childPkRows.map(row => Object.values(row));
+
+        const childVals = [];
+        while(parentVals.length > 0) {
+            const pageVals = parentVals.splice(0, 500); // MySQL freaks out with large queries
+            const sql = `${selectSql} (${pageVals.map(() => fkExpr).join(' or ')})`;
+            const flat = pageVals.reduce((acc, cur) => {
+                acc.push(...cur);
+                return acc;
+            }, []);
+            const childPkRows = (await srcCon.awaitQuery(sql, flat));
+            const tempVals = childPkRows.map(row => Object.values(row));
+            console.log(`child.name=${child.name} childVals=${childVals.length} tempVals=${tempVals.length}`);
+            childVals.push(...tempVals);
+            console.log(`child.name=${child.name} childVals=${childVals.length}`);
+        }
 
         await syncRows(srcTables, tableName, dstTables, childVals, parent2child, path);
     }
