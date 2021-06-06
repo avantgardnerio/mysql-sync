@@ -233,7 +233,10 @@ const syncRows = async (srcTables, tableName, dstTables, queryVals, parent2child
         // Get parent FK values
         const indices = child.cols.map(col => colNames.indexOf(`\`${col.parent}\``));
         const parentVals = retVals.map(vals => indices.map(idx => vals[idx]));
-        const flat = parentVals.reduce((acc, cur) => [...acc, ...cur], []);
+        const flat = parentVals.reduce((acc, cur) => {
+            acc.push(...cur);
+            return acc;
+        }, []);
         
         const childPkRows = (await srcCon.awaitQuery(selectSql, flat));
         const childVals = childPkRows.map(row => Object.values(row));
